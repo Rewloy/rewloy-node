@@ -1,0 +1,107 @@
+# Daily and on demand: fetch the live OpenAPI document, regenerate
+# src/generated/, check the result, and when anything changed open a pull
+# request (or update the open one) from the branch regenerate/openapi.
+#
+# That branch belongs to this workflow and is overwritten on every run: fix
+# the generator on main rather than on the branch.
+#
+# A pull request opened with GITHUB_TOKEN does not start other workflows, so
+# CI does not run on it by itself: this job runs the same checks and writes
+# the outcome into the pull request. Close and reopen it to run CI.
+# The repository must allow GitHub Actions to create pull requests
+# (Settings → Actions → General → Workflow permissions).
+name: Regenerate
+
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: regenerate
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BRANCH: regenerate/openapi
+      BASE: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v7
+      # No dependency cache in a job that can write to the repository.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Regenerate from the live document
+        run: npm run generate
+
+      - name: Anything new?
+        id: diff
+        run: |
+          if git diff --quiet -- openapi src/generated; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The live document matches the snapshot."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- openapi src/generated
+          fi
+
+      - name: Typecheck, build and test
+        id: check
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: npm run typecheck && npm run build && npm test
+
+      - name: Open or update the pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK: ${{ steps.check.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          summary=$(node -e '
+            const d = JSON.parse(require("node:fs").readFileSync("openapi/openapi.json", "utf8"));
+            const ops = Object.values(d.paths).flatMap((p) => Object.keys(p)).length;
+            console.log(`API ${d.info.version}: ${Object.keys(d.paths).length} paths, ${ops} operations`);
+          ')
+          if [ "$CHECK" = "success" ]; then result="Typecheck, build and test passed."; else result="**Typecheck, build or test failed**: the generator or the hand-written code needs work. See the run."; fi
+          {
+            echo "The live OpenAPI document (https://app.rewloy.com/v1/openapi.json) changed: $summary."
+            echo
+            echo "$result ($RUN_URL)"
+            echo
+            echo '```'
+            git diff --stat -- openapi src/generated
+            echo '```'
+            echo
+            echo "Opened by the Regenerate workflow, so CI does not start by itself: close and reopen this pull request to run it."
+          } > "$RUNNER_TEMP/body.md"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git add openapi/openapi.json src/generated
+          git commit -q -m "Regenerate from the live OpenAPI document" -m "$summary"
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+
+          number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --body-file "$RUNNER_TEMP/body.md"
+            echo "Updated #$number"
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" --title "Regenerate from the live OpenAPI document" --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+      - name: Fail when the regenerated code does not pass
+        if: steps.diff.outputs.changed == 'true' && steps.check.outcome != 'success'
+        run: |
+          echo "The regenerated code failed its checks; the pull request says so."
+          exit 1
