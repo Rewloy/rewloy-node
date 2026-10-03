@@ -2,8 +2,7 @@
 
 **Rewloy API'nin resmî Node.js ve TypeScript kütüphanesi.**
 
-> **Durum: hazırlanıyor.** Henüz yayımlanmış bir sürüm yok. O zamana kadar API'yi
-> doğrudan kullanabilirsiniz. Aşağıdaki bağlantılar her şeyi anlatır.
+> **Durum: önizleme (0.x): yayımlanmadı; API kararlı, kütüphane arayüzü 1.0'a kadar değişebilir.**
 
 [Rewloy](https://rewloy.com), işletmelerin dijital sadakat kartlarını
 müşterinin telefonuna koyar. Kart türleri damga, puan, VIP, cashback, hediye
@@ -14,35 +13,328 @@ kartı, kupon ve indirimdir:
 
 Kasada QR okutulur; bakiye, ödül ve kampanyalar kartın kendisinde güncellenir.
 Panelde yapılabilen her şey [Rewloy API v1](https://rewloy.com/gelistiriciler)
-ile de yapılabilir.
+ile de yapılabilir; bu kütüphane onu Node.js'ten kullanır:
 
-## Neler olacak
-
-- **Tam tipli bir istemci.** Tipler OpenAPI belgesinden
-  ([`openapi.json`](https://app.rewloy.com/v1/openapi.json)) üretilir ve her
-  API değişikliğinde otomatik olarak güncellenir. Node 22 ve üstünde
-  bağımlılıksız çalışır (yerleşik `fetch`).
-- **Kimlik:**
-  - API anahtarı (`rwk_…`): kasa, e-ticaret ya da kendi sisteminiz için;
-  - ekip oturumu (`rws_…`);
-  - kart sahibi oturumu (`rwh_…`): Rewloy Cüzdan gibi müşteri uygulamaları
-    için.
-- **Webhook doğrulaması.** İmzalı istekleri doğrulayan, Express, Fastify ve
-  benzerleriyle kullanılabilecek bir yardımcı.
-- **Güvenli tekrar:** `Idempotency-Key` desteği ve geçici hatalarda ölçülü
-  yeniden deneme.
-- **Canlı akış:** kart hareketlerini dinlemek için `text/event-stream`
-  desteği.
+- **Tam tipli.** API'nin her işlemi, `operationId` adıyla bir metottur.
+  Parametreler, gövdeler ve yanıtlar OpenAPI belgesinden
+  ([`openapi.json`](https://app.rewloy.com/v1/openapi.json)) üretilen
+  tiplerle gelir. CI belgeyi her gün okur ve değişince yeniden üretir.
+- **Bağımlılıksız.** Node 22 ve üstü; yerleşik `fetch` ve `node:crypto`.
+- **Güvenli tekrar.** Geçici hatalarda ölçülü yeniden deneme; kasa işleminde
+  ve kampanyada `Idempotency-Key`.
+- **Ötesi:** sayfalama, canlı akış (SSE), webhook imzası doğrulama,
+  kullanımdan kalkma uyarıları.
 
 ## Kurulum
 
-Yayımlandığında npm'den kurulacak:
+npm'de yayımlanana kadar GitHub'dan kurun (Node 22 ya da üstü ve git gerekir):
 
 ```sh
-npm install @rewloy/node
+npm install github:Rewloy/rewloy-node
 ```
 
-Paket adı henüz kesin değildir.
+Kurulum kütüphaneyi kaynağından derler. Bir sürüme bağlı kalmak için sona bir
+commit ekleyin: `github:Rewloy/rewloy-node#<commit>`. Yayımlandığında:
+`npm install @rewloy/node`.
+
+## Başlarken
+
+```ts
+import { Rewloy } from '@rewloy/node';
+
+const rewloy = new Rewloy({ apiKey: process.env.REWLOY_API_KEY! });
+
+const kart = await rewloy.getPass({ params: { serial: 'ABCD-EFGH-JKLM' } });
+console.log(kart.type, kart.balance, kart.rewardReady);
+```
+
+Her işlem, adı `operationId` olan bir metottur
+([API referansı](https://rewloy.com/gelistiriciler/api)). Tek bir argüman alır,
+işlemin gerektirdikleriyle:
+- `params`: adresteki parametreler (`{serial}`, `{id}`…);
+- `query`: sorgu parametreleri;
+- `body`: JSON gövde;
+- `merchant`: `Rewloy-Merchant` başlığı;
+- `idempotencyKey`: `Idempotency-Key` başlığı (kasa işlemi ve kampanya);
+- `signal`, `timeoutMs`, `maxRetries`.
+
+Metot yanıttaki `data`yı döndürür. Sayfalı listelerde `{ data, meta }`,
+gövdesiz yanıtta (`204`) `undefined`, dosyada (QR, harita, CSV, `.pkpass`) bir
+`Blob` döner.
+
+Tipler de dışa açıktır: `IssuePassBody`, `GetPassData`, `ListCustomersItem`,
+`ErrorCode`… Hepsi işlem adıyla `Operations` içinde de bulunur.
+
+### Kimlik
+
+| İstemci | Ne için |
+|---|---|
+| `new Rewloy({ apiKey: 'rwk_…' })` | API anahtarı: kasa, e-ticaret, kendi sisteminiz |
+| `new Rewloy({ staffSession: 'rws_…', merchant })` | ekip oturumu: bir kişinin işletme uygulaması |
+| `new Rewloy({ holderSession: 'rwh_…' })` | kart sahibi oturumu: Rewloy Cüzdan gibi müşteri uygulamaları |
+| `new Rewloy()` | kimlik istemeyen uç noktalar: giriş, katılım, kod |
+
+`merchant`, ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme
+için çalıştığını söyler (`Rewloy-Merchant`). Her çağrıda `merchant` ile
+değiştirilebilir. Oturumlar kimliksiz bir istemciyle açılır:
+
+```ts
+const { token, mfaRequired } = await new Rewloy().login({ body: { email, password } });
+const ekip = new Rewloy({ staffSession: token, merchant: isletmeId });
+if (mfaRequired) await ekip.proveMfa({ body: { code: '123456' } });
+```
+
+Bir işlem istemcinin kimlik türünü kabul etmiyor ama kimliksiz de çalışıyorsa
+(örneğin `login`), istemci onu kimliksiz çağırır. API, işlemin kabul etmediği
+bir kimliği reddeder (`CREDENTIAL_NOT_ALLOWED`).
+
+Diğer seçenekler:
+- `baseUrl` (varsayılan `https://app.rewloy.com`);
+- `timeoutMs` (60000);
+- `maxRetries` (2);
+- `fetch`: kendi `fetch`iniz;
+- `userAgent`: gönderilen `User-Agent`a eklenir, örneğin `"KasaPOS/4.2"`.
+
+## Kart vermek ve kasada işlem
+
+```ts
+const { serial, cardUrl } = await rewloy.issuePass({
+  body: { programId, email: 'ayse@ornek.com', firstName: 'Ayşe', kvkkConsent: true },
+});
+
+const sonuc = await rewloy.passAction({
+  params: { serial },
+  body: { action: 'earn-stamps', locationId, count: 1 },
+  idempotencyKey: `fis-${fisNo}`,
+});
+if (sonuc.duplicate) console.log('Bu fiş zaten işlenmiş');
+```
+
+`passAction` ve `sendCampaign` bir `Idempotency-Key` ister. Verilmezse
+kütüphane bir UUID üretir ve aynı çağrının her denemesinde aynısını gönderir.
+Kasada fiş numarası gibi kendi anahtarınızı vermek daha iyidir: uygulama
+çöküp yeniden başlasa bile aynı fiş ikinci kez işlenmez, aynı anahtarla tekrar
+ilk sonucu `duplicate: true` ile döndürür.
+
+## Sayfalama
+
+```ts
+for await (const musteri of rewloy.paginate('listCustomers', { query: { consent: 'yes', limit: 200 } })) {
+  console.log(musteri.displayName, musteri.email);
+}
+```
+
+`paginate` sayfalı her listeyi (`page`/`limit` ve `meta`) öğe öğe dolaşır ve
+son sayfada durur. Tek bir sayfa için metodun kendisi yeter:
+`const { data, meta } = await rewloy.listCustomers({ query: { page: 2 } })`.
+
+## Canlı akış
+
+```ts
+const ac = new AbortController();
+for await (const olay of rewloy.liveFeed({ signal: ac.signal })) {
+  if (olay.event === 'event') {
+    const { kind, location, program, delta, unit, name } = JSON.parse(olay.data);
+    console.log(kind, location, program, delta, unit, name);
+  }
+}
+```
+
+`liveFeed` (işletmenin tezgâh akışı) ve `holderCardEvents` (kart sahibinin
+kartındaki değişiklik) sunucu olayları (`text/event-stream`) yayınlar.
+`rewloy.stream('liveFeed', argüman)` aynı işi görür. Her olay `event`, `data`
+ve `id` taşır.
+
+- **Yeniden bağlanma.** Bağlantı koparsa akış kendiliğinden yeniden bağlanır:
+  sunucunun `retry:` süresi kadar bekler, bir olay `id` taşıdıysa
+  `Last-Event-ID` gönderir. `reconnect: false` bunu kapatır.
+- **Sessiz bağlantı.** API 25 saniyede bir `: hb` gönderir; 60 saniye hiç veri
+  gelmezse bağlantı kopmuş sayılır (`idleTimeoutMs`).
+- **Durdurmak:** `signal`, döngüden `break` ya da `akis.close()`.
+- **Bitiren hatalar.** Yeniden bağlanmanın düzeltemeyeceği bir hata (`401`,
+  `403`, `404`) akışı `RewloyError` ile bitirir.
+
+## Webhook doğrulama
+
+Rewloy her teslimi imzalar:
+
+```
+Rewloy-Signature: t=<unix saniye>,v1=<hex HMAC-SHA256(sır, "<t>.<ham gövde>")>
+```
+
+`verifyWebhook` imzayı **ham gövdeyle** ve webhook oluşturulurken bir kez
+gösterilen sırla (`whsec_…`) doğrular:
+- karşılaştırmayı sabit sürede yapar;
+- `t` şimdiden 300 saniyeden (`toleranceSeconds`) uzaksa reddeder;
+- gövdeyi ayrıştırılmış olarak döndürür.
+
+Tutmazsa `WebhookSignatureError` atar: 400 ile yanıtlayın ve hiçbir işlem
+yapmayın. Gövde mutlaka ham olmalıdır. JSON olarak ayrıştırılıp yeniden yazılan
+bir gövde imzayı tutturmaz.
+
+Express:
+
+```ts
+import express from 'express';
+import { verifyWebhook, WebhookSignatureError } from '@rewloy/node';
+
+const app = express();
+app.post('/rewloy/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  let olay;
+  try {
+    olay = verifyWebhook({
+      payload: req.body,
+      header: req.get('Rewloy-Signature'),
+      secret: process.env.REWLOY_WEBHOOK_SECRET!,
+    });
+  } catch (err) {
+    if (err instanceof WebhookSignatureError) return res.sendStatus(400);
+    throw err;
+  }
+  // Rewloy-Delivery bir teslimin her denemesinde aynıdır: işlediyseniz atlayın.
+  if (dahaOnceIslendi(req.get('Rewloy-Delivery'))) return res.sendStatus(200);
+  if (olay.type === 'pass.activity') {
+    console.log(olay.data.card, olay.data.kind, olay.data.delta);
+  }
+  res.sendStatus(200);
+});
+```
+
+Fastify (gövde yalnız bu yolda ham kalsın diye ayrı bir kapsamda):
+
+```ts
+app.register(async (scope) => {
+  scope.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+  scope.post('/rewloy/webhook', async (req, reply) => {
+    try {
+      const olay = verifyWebhook({
+        payload: req.body as Buffer,
+        header: req.headers['rewloy-signature'],
+        secret: process.env.REWLOY_WEBHOOK_SECRET!,
+      });
+      // …
+      return reply.code(200).send();
+    } catch (err) {
+      if (err instanceof WebhookSignatureError) return reply.code(400).send();
+      throw err;
+    }
+  });
+});
+```
+
+Başlıklar:
+- `Rewloy-Event`: olay türü (`pass.issued`, `pass.activity`, `pass.voided`,
+  `webhook.test`); gövdedeki `type` ile aynı.
+- `Rewloy-Delivery`: teslimin kimliği. Teslim "en az bir kez"dir: çift gelen
+  teslimi bununla ayıklayın.
+
+Gövde kişinin iletişim bilgisini taşımaz; kişiyi `customer_id` ile API'den
+okuyun. 2xx dışı bir yanıt yaklaşık 45 saat boyunca 8 kez yeniden denenir ve
+her deneme yeni bir `t` ile imzalanır. Kendi işleyicinizi test etmek için
+`signWebhook({ payload, secret })` aynı başlığı üretir.
+
+## Hatalar ve yeniden deneme
+
+```ts
+import { RateLimitError, RewloyError } from '@rewloy/node';
+
+try {
+  await rewloy.passAction({
+    params: { serial },
+    body: { action: 'spend', locationId, amountMinor: 5000 },
+    idempotencyKey: `fis-${fisNo}`,
+  });
+} catch (err) {
+  if (err instanceof RateLimitError) console.log(`${err.retryAfter} saniye sonra yeniden deneyin`);
+  else if (err instanceof RewloyError && err.code === 'INSUFFICIENT_BALANCE') console.log(err.detail);
+  else throw err;
+}
+```
+
+`RewloyError` şunları taşır:
+- `status`: HTTP durumu;
+- `code`: API'nin sabit kodu ([hata kodları](https://rewloy.com/gelistiriciler/hatalar));
+  kodunuz buna göre davranmalı;
+- `title`: kodun katalogdaki başlığı;
+- `detail`: API'nin açıklaması (Türkçe, değişebilir);
+- `details`: varsa ayrıntı; doğrulama hatasında `[{ field, rule, message }]`;
+- `requestId`: `x-request-id`; destek talebinde bunu verin;
+- `body`, `headers`, `docs` ve `operation`.
+
+Alt sınıflar:
+- `RateLimitError`: `429`; `retryAfter` saniye;
+- `RewloyConnectionError`: yanıt gelmedi (`status` 0, `code`
+  `CONNECTION_ERROR`);
+- `RewloyTimeoutError`: zaman aşımı (`TIMEOUT`).
+
+Rewloy'un olmayan bir hata gövdesi (örneğin bir vekil sunucunun 502 sayfası)
+`HTTP_502` gibi bir kodla gelir.
+
+**Yeniden deneme.** Şunlar en çok `maxRetries` kez (varsayılan 2) yeniden
+denenir: bağlantı hatası, zaman aşımı, `429`, `502`, `503`, `504` ve
+Cloudflare'in `520`–`524` hataları.
+- **Bekleme:** üstel ve rastgele (0,5 sn, 1 sn, 2 sn… en çok 8 sn); yanıt
+  `Retry-After` taşıyorsa o kadar. `Retry-After` 60 saniyeden uzunsa
+  beklenmez, hata size gelir.
+- **Yalnız tekrarı güvenli istekler:** `GET`, `PUT`, `DELETE` ve
+  `Idempotency-Key` taşıyan `POST`. İlk istek hâlâ işlenirken gelen
+  `409 IDEMPOTENCY_IN_PROGRESS` de beklenip yeniden denenir. Diğer `POST` ve
+  `PATCH` istekleri hiç tekrar edilmez.
+- **Süre:** her deneme `timeoutMs` (varsayılan 60 sn) içinde bitmelidir.
+
+## Kullanımdan kalkma
+
+Kalkacak bir uç nokta en az 180 gün önceden duyurulur. O süre boyunca her
+yanıtı `Deprecation`, `Sunset` ve `Link` başlıklarını taşır.
+
+- **Uyarı.** Kütüphane her işlem için bir kez `process.emitWarning` ile bir
+  `DeprecationWarning` (kodu `REWLOY_DEPRECATED`) yayar. Uyarı işlemi, `Sunset`
+  tarihini ve değişiklik günlüğündeki kaydı söyler.
+- **Tipler.** O metot `@deprecated` olarak işaretlenir; editörünüz üstünü
+  çizer.
+- **Yönetmek.** Uyarıları kendi kayıtlarınıza almak için
+  `process.on('warning', …)`; kapatmak için `node --no-deprecation`.
+
+## Yanıtın tamamı ve test modu
+
+```ts
+const yanit = await rewloy.request('sendCampaign', {
+  body: { body: 'Bu hafta kahveler 2 damga!' },
+  idempotencyKey: 'kampanya-2026-10-03',
+});
+yanit.status;     // 201
+yanit.replayed;   // true: aynı anahtarın ilk yanıtı yeniden döndü (Idempotent-Replayed)
+yanit.requestId;  // x-request-id
+yanit.mode;       // Rewloy-Mode
+yanit.data;       // kampanya
+```
+
+`request(işlem, argüman)` her işlemi çağırır ve yanıtın tamamını döndürür:
+`data`, sayfalı listede `meta`, `status`, `headers`, `requestId`, `mode` ve
+`replayed`.
+
+`mode`, yanıtın `Rewloy-Mode` başlığıdır. Platformda test modu hazırlanıyor:
+gerçek mesaj göndermeyen, gerçek kart vermeyen test anahtarları. Geldiğinde
+test yanıtları bunu bu başlıkla söyleyecek. Başlık yoksa `null`. Canlı akışta
+aynı bilgi `akis.mode`dadır.
+
+İşlem tablosu da dışa açıktır: `OPERATIONS.passAction` →
+`{ method, path, auth, merchant, idempotency, paged, stream, deprecated, … }`.
+
+## Geliştirme
+
+```sh
+npm install
+npm run generate                                   # canlı belgeden: openapi/openapi.json ve src/generated/
+npm run generate -- --file openapi/openapi.json    # kayıtlı belgeden
+npm run typecheck && npm run build && npm test
+```
+
+- `src/generated/` elle düzenlenmez; üreteç `scripts/generator.ts`'tir.
+- Testler ağa çıkmaz: yerel bir sahte API ile çalışır. TypeScript'i doğrudan
+  çalıştırdıkları için Node 22.18 ya da üstünü ister.
+- CI her gün canlı belgeyi okur ve bir değişiklik varsa bir pull request açar.
+- Kararlar: [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Belgeler
 
@@ -52,11 +344,14 @@ Paket adı henüz kesin değildir.
 | API referansı | https://rewloy.com/gelistiriciler/api |
 | OpenAPI 3.1 | https://app.rewloy.com/v1/openapi.json |
 | Hata kodları | https://rewloy.com/gelistiriciler/hatalar |
-| Değişiklik günlüğü | https://rewloy.com/gelistiriciler/degisiklikler |
+| API'nin değişiklik günlüğü | https://rewloy.com/gelistiriciler/degisiklikler |
+| Bu kütüphanenin değişiklikleri | [CHANGELOG.md](CHANGELOG.md) |
 
 **Sürümler:**
-- Kütüphane anlamsal sürümleme ([SemVer](https://semver.org)) kullanacak.
-- API'ye alan eklemek geriye uyumludur.
+- Kütüphane anlamsal sürümleme ([SemVer](https://semver.org)) kullanır. 1.0'a
+  kadar arayüzü değişebilir.
+- API'ye alan eklemek geriye uyumludur; kütüphanenin tipleri her gün
+  güncellenir.
 - Kalkacak bir uç nokta en az 180 gün önce duyurulur ve bu süre boyunca
   `Deprecation` ve `Sunset` başlıklarını taşır.
 
@@ -75,20 +370,89 @@ Bir güvenlik açığı bulursanız [SECURITY.md](SECURITY.md) dosyasındaki yol
 
 **The official Node.js and TypeScript library for the Rewloy API.**
 
-> **Status: in development.** There is no release yet.
+> **Status: preview (0.x), not published yet. The API is stable; the
+> library's interface may change until 1.0.**
 
-Until there is a release, use the API directly:
-- [getting started](https://rewloy.com/gelistiriciler)
-- [reference](https://rewloy.com/gelistiriciler/api)
-- [OpenAPI](https://app.rewloy.com/v1/openapi.json)
+The documentation of the API itself is in Turkish (links above). In short:
 
-The documentation is in Turkish.
+- Every operation of the API is a method named by its `operationId`, typed
+  from the OpenAPI document, which CI reads daily and regenerates from.
+- No dependencies: Node 22 or later, built-in `fetch` and `node:crypto`.
+- Safe retries, `Idempotency-Key` handling, pagination, server-sent events,
+  webhook signature verification and deprecation warnings.
 
-**Planned:**
-- fully typed, generated from the OpenAPI document and kept current in CI;
-- no dependencies on Node 22 or later;
-- webhook signature verification;
-- `Idempotency-Key` handling and retries;
-- server-sent events for live card activity.
+### Install
 
-It will be published on npm, MIT licensed.
+Until it is on npm, install it from GitHub (Node 22 or later and git;
+it builds on install). Pin a commit with `#<commit>`.
+
+```sh
+npm install github:Rewloy/rewloy-node
+```
+
+### Use
+
+```ts
+import { Rewloy } from '@rewloy/node';
+
+const rewloy = new Rewloy({ apiKey: process.env.REWLOY_API_KEY! });   // or { staffSession, merchant } or { holderSession }
+
+const { serial } = await rewloy.issuePass({ body: { programId, email, kvkkConsent: true } });
+const result = await rewloy.passAction({
+  params: { serial },
+  body: { action: 'earn-stamps', locationId },
+  idempotencyKey: `receipt-${receiptNo}`,   // generated when omitted, reused across retries
+});
+```
+
+- **Arguments.** Each method takes one object: `params`, `query` and `body` as
+  the operation needs, plus `merchant`, `idempotencyKey`, `signal`, `timeoutMs`
+  and `maxRetries`.
+- **Results.** It resolves to the answer's `data`: `{ data, meta }` for paged
+  lists, `undefined` for 204, a `Blob` for files.
+- **The whole answer.** `rewloy.request(id, args)` returns `status`,
+  `headers`, `requestId`, `mode` (the `Rewloy-Mode` header, for the coming
+  test mode) and `replayed` (`Idempotent-Replayed`).
+- **Pagination.** `rewloy.paginate('listCustomers', args)` iterates the items
+  of every page.
+- **Streams.** `rewloy.liveFeed({ signal })` (or `rewloy.stream('liveFeed',
+  args)`) iterates server-sent events (`event`, `data`, `id`). It reconnects
+  with `Last-Event-ID` unless `reconnect: false`.
+
+### Webhooks
+
+Verify the **raw** body (for example `express.raw({ type: 'application/json' })`)
+with the secret shown when the webhook was created:
+
+```ts
+const event = verifyWebhook({ payload: req.body, header: req.get('Rewloy-Signature'), secret });
+```
+
+- **Check.** `Rewloy-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret,
+  "<t>.<raw body>")>` is compared in constant time, and `t` must be within
+  300 seconds.
+- **Refusal.** On failure it throws `WebhookSignatureError`: answer 400.
+- **Headers.** `Rewloy-Event` is the event type. `Rewloy-Delivery` is the
+  same on every retry of a delivery: deduplicate on it. Delivery is at least
+  once.
+
+### Errors, retries, deprecations
+
+- **Errors.** Failures throw `RewloyError` with `status`, `code` (the API's
+  stable code), `title`, `detail`, `details`, `requestId` and `body`.
+  Subclasses: `RateLimitError` (`retryAfter`), `RewloyConnectionError` and
+  `RewloyTimeoutError`.
+- **What is retried.** Network errors, timeouts, 429, 502–504 and
+  Cloudflare's 520–524, up to `maxRetries` (default 2), with exponential
+  backoff and jitter, honouring `Retry-After`.
+- **Only when safe.** Only GET, PUT, DELETE, and POST with an
+  `Idempotency-Key`, are retried.
+- **Deprecations.** A deprecated operation's answers carry `Deprecation`,
+  `Sunset` and `Link`. The client emits one `DeprecationWarning`
+  (`REWLOY_DEPRECATED`) per operation, and the generated method is marked
+  `@deprecated`.
+
+### Security and licence
+
+Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) says.
+[MIT](LICENSE) licensed.
