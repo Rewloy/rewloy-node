@@ -1,0 +1,54 @@
+{
+  "name": "@rewloy/node",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rewloy API için resmî Node.js ve TypeScript kütüphanesi / The official Node.js and TypeScript library for the Rewloy API",
+  "license": "MIT",
+  "author": "Rewloy",
+  "homepage": "https://github.com/Rewloy/rewloy-node#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rewloy/rewloy-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Rewloy/rewloy-node/issues"
+  },
+  "keywords": [
+    "rewloy",
+    "loyalty",
+    "sadakat",
+    "wallet",
+    "apple-wallet",
+    "google-wallet",
+    "api",
+    "sdk"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "~5.9.3"
+  }
+}
