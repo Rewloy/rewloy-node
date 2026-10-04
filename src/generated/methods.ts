@@ -34,7 +34,7 @@ export abstract class RewloyMethods {
   /**
    * Bir kartın durumu
    *
-   * Bakiye, ilerleme, ödül hazırlığı ve seviye — müşterinin cüzdanında gördüğüyle aynı.
+   * Bakiye, ilerleme, ödül hazırlığı ve seviye — müşterinin cüzdanında gördüğüyle aynı. `actions` kartın türünün aldığı kasa işlemlerini ve şimdi yapılıp yapılamayacaklarını, `sale` bir satışın bu kartta ne yazacağını söyler.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -51,7 +51,7 @@ export abstract class RewloyMethods {
   /**
    * Kartın bir şubedeki kasa kuralları
    *
-   * Kasada işlem yapmadan önce: kart bu şubede kullanılabilir mi, hangi şubelerde geçerli, şu an burada hangi kasa kampanyası çalışıyor ve kasiyerin göreceği uyarılar (tarayıcıdaki şeritlerin aynısı). `allowed: false` iken işlem `WRONG_LOCATION` ile reddedilir (ADR 139).
+   * Kasada işlem yapmadan önce: kart bu şubede kullanılabilir mi, hangi şubelerde geçerli, şu an burada hangi kasa kampanyası çalışıyor ve kasiyerin göreceği uyarılar (tarayıcıdaki şeritlerin aynısı). `allowed: false` iken işlem `WRONG_LOCATION` ile reddedilir (ADR 139). Şube kartın işletmesinin silinmemiş bir şubesi olmalıdır, değilse `404 LOCATION_NOT_FOUND` (kasa işlemleri gibi).
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -68,7 +68,7 @@ export abstract class RewloyMethods {
   /**
    * Kasada işlem
    *
-   * Karta, bir şubede kasa işlemi uygular. **Idempotency-Key zorunludur**: aynı anahtarla tekrar, bakiyeyi ikinci kez değiştirmez ve ilk sonucu döndürür (`duplicate: true`). Salt-okunur hesapta da çalışır: mevcut kartlar çalışmaya devam eder.
+   * Karta, bir şubede kasa işlemi uygular. **Idempotency-Key zorunludur** (8–64 karakter, bu kimlik için kalıcı olarak tekil): aynı anahtarla aynı işlemin tekrarı bakiyeyi ikinci kez değiştirmez ve ilk sonucu döndürür (`duplicate: true`); bu kartta başka bir işlem için kullanılmış bir anahtar `422 IDEMPOTENCY_KEY_REUSED` alır. Şube işletmenizin silinmemiş bir şubesi olmalıdır (`404 LOCATION_NOT_FOUND`). Salt-okunur hesapta da çalışır: mevcut kartlar çalışmaya devam eder.
    * | action | kart | gerekli alan |
    * |---|---|---|
    * | `earn-stamps` | damga | `count` (varsayılan 1) |
@@ -94,6 +94,37 @@ export abstract class RewloyMethods {
    */
   passAction(args: T.PassActionArgs): Promise<T.PassActionData> {
     return this._call('passAction', args);
+  }
+
+  /**
+   * Satışı karta yaz
+   *
+   * Kasada ya da kendi yazılımınızda tamamlanan bir satışı karta yazar: ne yazılacağına kartın türü ve programın kendi kuralı karar verir, entegrasyonun türü bilmesi gerekmez (ADR 177). `amountMinor` ödenen toplamdır, işletmenin para biriminde ve kuruş cinsinden; başka para birimi kabul edilmez ve çevrilmez.
+   * | kart | satış ne yazar | `applied` |
+   * |---|---|---|
+   * | damga | 1 damga (kasa kampanyası katlar) | `stamps` |
+   * | puan | programın oranıyla, her 1 birim için `earnRate` puan | `points` |
+   * | VIP | 1 ziyaret, ziyaret penceresinde bir kez | `visit` |
+   * | cashback | toplamın `cashbackRate` yüzdesi | `cashback` |
+   * | hediye kartı, kupon, indirim | hiçbir şey (harcamak ve kullanmak `POST /v1/passes/{serial}/actions` ile) | `none` |
+   *
+   * Hiçbir şey yazılmadıysa yanıt yine 200'dür, `applied: "none"` ve nedeni `reason`: `below_minimum` (tutar bir puan ya da bir kuruş birikim üretmiyor; `amountMinor: 0` dahil), `visit_already_counted` (VIP: bu ziyaret penceresinde ziyaret zaten sayıldı), `card_full` (damga: kart dolu ve program ödülden sonra damga biriktirmiyor; önce ödülü kullanın), `type_does_not_earn`. Damga ve VIP, `amountMinor: 0` olsa da ziyareti sayar.
+   * - **Idempotency-Key zorunludur**: 8–64 karakter ve bu kimlik için **kalıcı olarak tekil**; defter anahtarları hiç silinmez. Fiş numarası tek başına anahtar olamaz: ÖKC fiş numaraları Z raporundan sonra yeniden başlar. Kasa + Z no + fiş no birleşimi (ör. `kasa3-z0187-fis0042`) ya da satışla birlikte saklanıp tekrarda yeniden gönderilen bir UUID kullanın. Aynı anahtarla tekrar ikinci kez yazmaz: `duplicate: true`, `credited` ilk isteğin yazdığı, `balance` kartın şimdiki bakiyesi. Anahtar `POST /v1/passes/{serial}/actions` ile aynı alandadır: orada bu kartta başka bir işlem için kullanılmış bir anahtar `422 IDEMPOTENCY_KEY_REUSED` alır.
+   * - **`reference`** (isteğe bağlı, en fazla 80 karakter): fiş numarası buraya yazılır. Defter kaydının notuna yazılır: müşterinin geçmişinde (VIP ziyaretleri hariç; onlar ziyaret olarak görünür) ve işlem dökümünün `Not` sütununda görünür. Müşterinin kişisel bilgisini yazmayın.
+   * - Şube kuralları ve kasa kampanyaları `actions` ile aynıdır: kart bu şubede geçerli değilse `409 WRONG_LOCATION`, kampanya `promotion` ile döner. Salt-okunur hesapta da çalışır.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `scan.use` — Tarayıcıyı kullanma.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/passes/{serial}/sale`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-recordSale | API referansı}
+   */
+  recordSale(args: T.RecordSaleArgs): Promise<T.RecordSaleData> {
+    return this._call('recordSale', args);
   }
 
   // ------------------------------------------------------------ Katılım
@@ -176,6 +207,21 @@ export abstract class RewloyMethods {
   // ------------------------------------------------------------ Belge
 
   /**
+   * Sürüm
+   *
+   * Bu kurulumda çalışan Rewloy sürümü (`version`, anlamsal sürüm: `1.0.0`, bir aday için `1.0.0-rc.1`) ve API sürümü (`apiVersion`, şimdilik hep `v1`). Kimlik istemez; kimlikle de çağrılabilir. API'nin yolu (`/v1`) ürünün sürümünden bağımsızdır: ürün 1.x, 2.x olurken `/v1` ancak geriye uymayan bir API değişikliğiyle `/v2` olur. Aynı sürüm her yanıtın `Rewloy-Version` başlığındadır.
+   *
+   * **Kimlik:** kimlik gerekmez, API anahtarı, ekip oturumu, kart sahibi oturumu.
+   *
+   * `GET /v1/meta`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-getMeta | API referansı}
+   */
+  getMeta(args?: T.GetMetaArgs): Promise<T.GetMetaData> {
+    return this._call('getMeta', args);
+  }
+
+  /**
    * OpenAPI 3.1 belgesi
    *
    * Bu API'nin makine tarafından okunabilir tanımı (Swagger / OpenAPI 3.1). Swagger Editor, Postman ya da Insomnia'ya içe aktarılabilir; istemci kodu üretmek için kullanılabilir. Tanımlar koddaki uç nokta bildirimlerinden üretilir, elle yazılmaz.
@@ -244,7 +290,7 @@ export abstract class RewloyMethods {
   /**
    * Kim olarak bağlıyım?
    *
-   * Ekip oturumu: kişi, iki adımlı doğrulama durumu ve koltuk taşıdığı işletmeler (her biri için yetkiler). API anahtarı: anahtarın kendisi, işletmesi, rolü, kapsamı, etkin yetkileri (`permissions`) ve bir mağaza eklentisinin anahtarıysa bağlantısı (`key.shopId`). Bir entegrasyonun ilk çağrısı olarak bağlantıyı doğrulamak için idealdir. `mode`: çağıranın test ortamında mı (`test`) gerçek işletmede mi (`live`) çalıştığı; ekip oturumu bir işletme seçmediyse `null`.
+   * Ekip oturumu: kişi, iki adımlı doğrulama durumu ve koltuk taşıdığı işletmeler (her biri için yetkiler). API anahtarı: anahtarın kendisi, işletmesi, rolü, kapsamı, etkin yetkileri (`permissions`), bir mağaza eklentisinin anahtarıysa bağlantısı (`key.shopId`) ve bir eklentinin açıp kapatabileceği yetenekler (`key.abilities`: `view` kartları, durumlarını, programın sayılarını ve son işlemleri görmek; `till` tek bir şubenin kasası, `key.tillLocationId`). Bir entegrasyonun ilk çağrısı olarak bağlantıyı doğrulamak için idealdir. `mode`: çağıranın test ortamında mı (`test`) gerçek işletmede mi (`live`) çalıştığı; ekip oturumu bir işletme seçmediyse `null`.
    *
    * **Kimlik:** ekip oturumu, API anahtarı.
    *
@@ -268,6 +314,7 @@ export abstract class RewloyMethods {
    * - `phone`: telefonla giriş açık değilse `501 NOT_ENABLED`; Türkiye cep telefonu değilse `400 INVALID_PHONE`. `channel` (`whatsapp` ya da `sms`) verilmezse şu an açık olan ilk yol kullanılır (önce WhatsApp); istenen yol açık değilse `501 NOT_ENABLED`, bugünkü bütçesi dolduysa `503 PHONE_BUSY` — ikisinde de `details.channels` şu an açık olanlar (boşsa e-postayla girin). Yanıttaki `channel` kodun gittiği yoldur: WhatsApp kodu kendiliğinden dolmaz, kişiye "Kodu kopyala" ile yapıştırmasını söyleyin.
    * - `previousToken`: bu kurulumun daha önceki `rwh_` oturumu (süresi dolmuş olsa da). Adres ya da numara o hesabınsa adres ve numara başına sınırlar uygulanmaz, böylece başkaları sizin kodlarınızı tüketemez. Çıkış yapılmış ya da kaldırılmış bir oturum bir şey kanıtlamaz.
    * - `deviceName`: açılacak oturumun Cihazlarım'daki adı.
+   * - **Idempotency-Key** (isteğe bağlı, önerilir; 8–64 karakter, her yeni istek için yeni bir UUID): aynı anahtar ve aynı gövdeyle tekrar yeni kod GÖNDERMEZ, ilk yanıtı (aynı `request`) `Idempotent-Replayed: true` ile döndürür ve sınırlardan düşmez — bağlantısı kopan uygulama güvenle yineler. Aynı anahtar başka bir gövdeyle `422 IDEMPOTENCY_KEY_REUSED`; ilk istek sürerken `409 IDEMPOTENCY_IN_PROGRESS` (bir şey gönderilmez). Yanıt şifreli saklanır, 7 gün tekrar edilir; kodun kendisi 15 dakika geçerlidir, yeni kod için yeni anahtar gönderin. Oturumsuz çağrıda anahtar istemcinin IP adresine bağlıdır. Başlık yoksa her çağrı yeni bir kod ve yeni bir `request` demektir.
    * - **Sözleşme değişikliği (ADR 150):** `request` yeni. E-postadaki bağlantı artık oturumu tek başına açmaz; bağlantıyı uygulamanız yakalarsa `linkToken` olarak yine aynı `request` ile gönderin.
    *
    * **Kimlik:** kimlik gerekmez.
@@ -483,7 +530,7 @@ export abstract class RewloyMethods {
   /**
    * Davet
    *
-   * Davet e-postasındaki bağlantının son parçası (`/davet/<code>`): hangi işletme, hangi adres, o adresin hesabı var mı (varsa mevcut şifreyle kabul edilir).
+   * Davet e-postasındaki bağlantının son parçası (`/davet/<code>`): hangi işletme, hangi adres. Adresin Rewloy hesabı olup olmadığını söylemez (bağlantı daveti yapanda da vardır, ADR 181): hesabı olan kişi o hesapla giriş yapıp oturumuyla kabul eder, olmayan şifre belirleyerek.
    *
    * **Kimlik:** kimlik gerekmez.
    *
@@ -498,9 +545,14 @@ export abstract class RewloyMethods {
   /**
    * Daveti kabul et
    *
-   * Hesap yoksa bu şifreyle açılır (en az 10 karakter); varsa mevcut şifre istenir. Koltuk ve roller verilir — daveti yapanın o anki yetkileriyle yeniden denetlenerek — ve oturum döner. Daveti yapan işletme sahiplerine bildirilir.
+   * Koltuk ve roller verilir — daveti yapanın o anki yetkileriyle yeniden denetlenerek — ve oturum döner. Daveti yapan işletme sahiplerine bildirilir. **Davet hiçbir zaman mevcut bir hesabın şifresini sormaz** (bağlantı daveti yapanda da vardır; ADR 181):
+   * - **Adresin hesabı varsa:** kişi o hesapla girer (`POST /v1/auth/login`) ve bu çağrıyı kendi `rws_` oturumuyla, gövdesiz yapar; yanıt aynı oturumu güncel işletmeleriyle döndürür. Başka bir adresin oturumu `403 INVITE_OTHER_ACCOUNT`. Oturumsuz çağrı, şifreyle de olsa, `409 INVITE_SIGN_IN`.
+   * - **Hesabı yoksa:** oturumsuz, `password` (en az 10 karakter) ile hesap açılır ve yeni oturum döner. Adres davetle doğrulanmış sayılmaz: doğrulama bağlantısı e-postayla gider (kayıttaki gibi).
+   * - IP başına 15 dakikada 20 deneme.
    *
-   * **Kimlik:** kimlik gerekmez.
+   * **Kimlik:** kimlik gerekmez, ekip oturumu.
+   *
+   * Salt-okunur hesapta da çalışır.
    *
    * `POST /v1/auth/invites/{code}/accept`
    *
@@ -1252,7 +1304,7 @@ export abstract class RewloyMethods {
    * | tür | alanlar |
    * |---|---|
    * | hediye kartı | `valueMinor` zorunlu (100 – 100.000.000 kuruş); kullanım her zaman sınırsız, bakiye bitene kadar |
-   * | kupon | ya `offerText` (ör. "1 tatlı") ya `valueMinor` (100 – 10.000.000 kuruş indirim); `usage` |
+   * | kupon | ya `offerText` (ör. "1 tatlı") ya `valueMinor` (100 – 10.000.000 kuruş indirim); `usage`; isteğe bağlı `onlineValue` (online mağazadaki değeri: `{ kind: amount, value: kuruş }` ya da `{ kind: percent, value: 1–100 }`, ADR 179) |
    * | indirim kartı | `percent` (yoksa programın oranı); `usage` |
    *
    * `usage`: `once` tek kullanım, `limited` + `usageLimit` (2–1000), `unlimited`. `validUntil` bir gün (YYYY-AA-GG) ise o günün sonuna kadar (Türkiye saati) geçerlidir. Başka türün alanı reddedilir. Planda `instruments` özelliği gerekir.
@@ -1907,7 +1959,7 @@ export abstract class RewloyMethods {
   /**
    * Ana sayfa
    *
-   * Dört ana sayı (yeni kart, yeni müşteri, ziyaret, ödül) ve bir önceki eşit dönem, arkalarındaki günlük seri (önce önceki dönem, sonra bu dönem), tezgâhtaki son 15 olay ve — kapsam bütün şubelerse ve 2+ şube varsa — şubeler yan yana. Kişi adları yalnız `customers.read` olan kimliğe gelir.
+   * Dört ana sayı (yeni kart, yeni müşteri, ziyaret, ödül) ve bir önceki eşit dönem, arkalarındaki günlük seri (önce önceki dönem, sonra bu dönem), tezgâhtaki son 15 olay ve — kapsam bütün şubelerse ve 2+ şube varsa — şubeler yan yana. Kişi adları yalnız `customers.read` olan kimliğe gelir. Kapsamı programlarla sınırlı bir kimlik bütün işletmenin özetini okuyamaz (`403 OUT_OF_SCOPE`); `GET /v1/analytics` ve `GET /v1/activity`yi programıyla kullanır.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -1924,7 +1976,7 @@ export abstract class RewloyMethods {
   /**
    * Analitik
    *
-   * Son 7, 30 ya da 90 günün göstergeleri: açık kartlar, yeni kartlar, ziyaretler, ziyaret eden kişiler ve bunlardan dönen (2+ ziyaret), ödüller; günlük ziyaretler; haftalık yeni ve dönen ziyaretçiler; program başına kart → kullanım → ödül hunisi; şubeler; en sık gelen müşteriler (yalnız `customers.read` ile). Apple Cüzdan'daki kartlar ve konum hatırlatması taşıyanlar.
+   * Son 7, 30 ya da 90 günün göstergeleri: açık kartlar, yeni kartlar, ziyaretler, ziyaret eden kişiler ve bunlardan dönen (2+ ziyaret), ödüller; günlük ziyaretler; haftalık yeni ve dönen ziyaretçiler; program başına kart → kullanım → ödül hunisi; şubeler; en sık gelen müşteriler (yalnız `customers.read` ile). Apple Cüzdan'daki kartlar ve konum hatırlatması taşıyanlar. `programId` ile tek bir programın sayıları (ADR 178); kapsamı programlarla sınırlı bir kimlik yalnız kendi programlarını görür. Bir mağaza eklentisinin anahtarına müşteri adı gelmez.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -1941,7 +1993,7 @@ export abstract class RewloyMethods {
   /**
    * İşlem kaydı: kasa
    *
-   * Kartlarda yapılan her işlem, yeniden eskiye: damga, puan, ödül, harcama, yükleme, ziyaret, kupon kullanımı… kim (ekip üyesi, API anahtarı ya da sistem), nerede, hangi kart. `day` işletmenin takvim günüdür. Planda `auditlog` özelliği gerekir. `limit` en fazla 100.
+   * Kartlarda yapılan her işlem, yeniden eskiye: damga, puan, ödül, harcama, yükleme, ziyaret, kupon kullanımı… kim (ekip üyesi, API anahtarı ya da sistem), nerede, hangi kart. `day` işletmenin takvim günüdür. Planda `auditlog` özelliği gerekir. `limit` en fazla 100. Kapsamı programlarla sınırlı bir kimlik (ör. mağaza eklentisinin anahtarı) yalnız kendi programlarının kartlarını görür (ADR 178). Bir mağaza eklentisinin anahtarına kişisel veri gelmez: ekip üyesi `actor` yerine "ekip üyesi" yazar, `personId` null'dır.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -1975,7 +2027,7 @@ export abstract class RewloyMethods {
   /**
    * Canlı akış (SSE)
    *
-   * Tezgâhta olan her şey, olduğu anda: `event: event` satırlarında `{ at, kind, location, program, delta, unit, name, currency }` (JSON). Kapsamınızdaki şubeler; kişi adı yalnız `customers.read` ile. 25 saniyede bir `: hb` satırı bağlantıyı canlı tutar; koparsa yeniden bağlanın. Tarayıcıdaki `EventSource` başlık gönderemediği için `fetch` ile akış okuyun. IP başına en fazla 12 açık bağlantı. Sunucudan sunucuya bildirim için webhook'ları kullanın.
+   * Tezgâhta olan her şey, olduğu anda: `event: event` satırlarında `{ at, kind, location, program, delta, unit, name, currency }` (JSON). Kapsamınızdaki şubeler; kişi adı yalnız `customers.read` ile. 25 saniyede bir `: hb` satırı bağlantıyı canlı tutar; koparsa yeniden bağlanın. Tarayıcıdaki `EventSource` başlık gönderemediği için `fetch` ile akış okuyun. IP başına en fazla 12 açık bağlantı. Sunucudan sunucuya bildirim için webhook'ları kullanın. Kapsamı programlarla sınırlı bir kimlik akışı açamaz (`403 OUT_OF_SCOPE`); `GET /v1/activity`yi programıyla sorar.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -2462,6 +2514,10 @@ export abstract class RewloyMethods {
    * - Kod **yalnız bu yanıtta** görünür; Rewloy yalnız özetini saklar. 15 dakika geçerlidir.
    * - Kodu bir kişi alır (ekip oturumu; bir anahtar anahtar üretemez), `apikeys.manage`, kartın programında mağaza bağlantısı yetkisi ve — elle anahtar oluştururken olduğu gibi — `team.manage` ile (anahtarın yetkisi o kişiden verilen bir roldür; kişi E-ticaret rolünün yetkilerini tüm şubelerde taşımalıdır), `api` ve `ecommerce` özellikli bir planda. Kod bir API anahtarı ürettiği için kişinin şifresi yeniden istenir (`password`), anahtar oluştururken olduğu gibi. Bağlantı ve anahtar, kod kullanıldığı anda bu kişinin yetkileriyle kurulur: kişi o arada yetkisini kaybettiyse hiçbir şey kurulmaz.
    * - Kural alanları `POST /v1/shops` ile aynıdır. En fazla 5 bağlantı ve aynı anda en fazla 5 bekleyen kod.
+   * - **Eklentinin yetkileri** (ADR 178), kodu alan kişi seçer; sonra bağlantının sayfasından ya da `PUT /v1/shops/{id}/plugin-abilities` ile değişir:
+   *   - `view` (Görüntüleme; bu çağrıda gönderilmezse kapalı, panelin formunda işaretli gelir): bağlantının programında `passes.read` ve `analytics.read` — kartın durumu (`GET /v1/passes/{serial}`), programın sayıları (`GET /v1/analytics?programId=`) ve kartlardaki son işlemler (`GET /v1/activity`). Müşterinin adı, e-postası ya da telefonu gelmez; ekip üyesinin e-postası da.
+   *   - `tillLocationId` (Kasa, varsayılan kapalı): bu tek şubede ve bağlantının programında `scan.use` — `GET /v1/passes/{serial}/till`, `POST …/sale`, `POST …/actions`. Hediye kartı yüklemek (`load`) yine `instruments.issue` ister ve verilmez. Kapalı başlar: açıkken WooCommerce'i yönetebilen herkes o şubede müşterilerin bakiyesini harcatabilir.
+   *   - Kişi bu yetkileri verebilmelidir (`team.manage` ve alt küme kuralı: Görüntüleme yetkilerini tüm şubelerde, `scan.use`'u o şubede taşımalı).
    *
    * **Kimlik:** ekip oturumu.
    *
@@ -2497,7 +2553,7 @@ export abstract class RewloyMethods {
    *
    * Mağaza eklentisinin tek adımı: paneldeki bağlantı kodunu (`rwc_…`) verir, karşılığında **bir kez** şunları alır: bağlantı (`shop`), bağlantının sırrı (`secret`, WooCommerce webhook'una yazılır) ve yalnız bu bağlantıya bağlı API anahtarı (`apiKey.token`). Kimlik istemez; kod kimliktir.
    * - Kod **tek kullanımlıktır**: ikinci kez, süresi dolmuşken ya da iptal edilmişken aynı yanıtı alır: `404 CONNECT_TOKEN_INVALID` (hangisi olduğu söylenmez). Kurulum yarıda reddedilirse (ör. 5 bağlantı sınırı) kod harcanmaz.
-   * - Anahtar "E-ticaret" rolündedir ve bağlantının programıyla sınırlıdır: kartları ve ayarları görür, yalnız kendi bağlantısını görür ve yönetir, o programdan kart verir. Bağlantı silinince anahtar da iptal edilir. Test ortamının kodu `rwk_test_` anahtarı verir (`mode`).
+   * - Anahtar "E-ticaret" rolündedir ve bağlantının programıyla sınırlıdır: kartları ve ayarları görür, yalnız kendi bağlantısını görür ve yönetir, o programdan kart verir. Kodu alan kişi Görüntüleme ve Kasa'yı seçtiyse anahtar onları da alır (`apiKey.abilities`, ADR 178); `GET /v1/me` her an yeniden söyler. Bağlantı silinince anahtar da iptal edilir. Test ortamının kodu `rwk_test_` anahtarı verir (`mode`).
    * - `shopName` anahtarın panelde görünen adına eklenir ("WooCommerce · …"). IP başına 10 dakikada 20 istek.
    *
    * **Kimlik:** kimlik gerekmez.
@@ -2508,6 +2564,298 @@ export abstract class RewloyMethods {
    */
   connectShop(args: T.ConnectShopArgs): Promise<T.ConnectShopData> {
     return this._call('connectShop', args);
+  }
+
+  /**
+   * Eklentinin yetkilerini değiştir
+   *
+   * Bağlantı koduyla kurulmuş bir bağlantının eklenti anahtarının bağlantı dışında yapabildikleri (ADR 178): Görüntüleme (`view`) ve tek bir şubenin Kasası (`tillLocationId`; null = kapalı). Değişiklik mevcut anahtara **hemen** uygulanır; eklentinin yeniden bağlanması gerekmez, eklenti `GET /v1/me` ile okur.
+   * - Yalnız ekip oturumuyla: bir anahtarın yetkisini değiştirmek, anahtar oluşturmak gibidir. Bağlantının programında `shops.manage` (ya da `apikeys.manage`), ayrıca `apikeys.manage`, `team.manage` ve alt küme kuralı (verilen yetkileri kişi o şubelerde taşımalı) ister; kişinin şifresi (`password`) ve değişikliğin nedeni (`reason`, en fazla 200 karakter, yalnız ekibin gördüğü işlem kaydına yazılır) istenir.
+   * - Bağlantıyı eklenti kurmadıysa ya da eklentinin anahtarı iptal edildiyse `409 NO_PLUGIN_KEY`.
+   * - **Eklentinin yetkileri** (ADR 178), kodu alan kişi seçer; sonra bağlantının sayfasından ya da `PUT /v1/shops/{id}/plugin-abilities` ile değişir:
+   *   - `view` (Görüntüleme; bu çağrıda gönderilmezse kapalı, panelin formunda işaretli gelir): bağlantının programında `passes.read` ve `analytics.read` — kartın durumu (`GET /v1/passes/{serial}`), programın sayıları (`GET /v1/analytics?programId=`) ve kartlardaki son işlemler (`GET /v1/activity`). Müşterinin adı, e-postası ya da telefonu gelmez; ekip üyesinin e-postası da.
+   *   - `tillLocationId` (Kasa, varsayılan kapalı): bu tek şubede ve bağlantının programında `scan.use` — `GET /v1/passes/{serial}/till`, `POST …/sale`, `POST …/actions`. Hediye kartı yüklemek (`load`) yine `instruments.issue` ister ve verilmez. Kapalı başlar: açıkken WooCommerce'i yönetebilen herkes o şubede müşterilerin bakiyesini harcatabilir.
+   *   - Kişi bu yetkileri verebilmelidir (`team.manage` ve alt küme kuralı: Görüntüleme yetkilerini tüm şubelerde, `scan.use`'u o şubede taşımalı).
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `shops.manage` — Mağaza bağlantısı yönetimi.
+   *
+   * `PUT /v1/shops/{id}/plugin-abilities`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-setShopPluginAbilities | API referansı}
+   */
+  setShopPluginAbilities(args: T.SetShopPluginAbilitiesArgs): Promise<T.SetShopPluginAbilitiesData> {
+    return this._call('setShopPluginAbilities', args);
+  }
+
+  /**
+   * Ödeme adımındaki kodu sor
+   *
+   * Müşterinin kupon alanına yazdığı Rewloy kodunun bu mağazada ne verdiğini söyler; değer ayırmaz. Kodun ilk sorulması onu bu bağlantıya bağlar (başka bir mağazada `CODE_USED`). Kod oluşturulduktan sonra 15 dakika içinde ilk kez sorulmalı, 45 dakika içinde bir siparişe bağlanmalıdır.
+   * - `balance` (hediye kartı, cashback): `maxMinor` en fazla ayrılabilecek tutardır — müşterinin seçtiği tutar ve kartın kullanılabilir bakiyesinden küçüğü. `percent`: indirim yüzdesi. `amount`: kuponun online tutarı. `link` (damga, puan, VIP): değer yok, sipariş bu karta işlenir.
+   * - `tax`: bağlantının ayarına göre değerin uygulanışı: `discount` vergiden önce kupon olarak, `payment` vergiden sonra ödeme gibi (eksi ücret). `link` için null.
+   * - Bilinmeyen, iptal edilmiş ve başka işletmenin kodu aynı `404 CODE_INVALID` yanıtını alır.
+   * - Sınırlar: bağlantı başına 10 dakikada 600 soru; bağlantı başına saatte 30 geçersiz koddan sonra geçersiz kodlar o saatin sonuna kadar `429 RATE_LIMITED` (geçerli bir kod yine çalışır). `shopper` gönderilirse aynı alışverişçiye ayrıca 10 dakikada 30 soru ve saatte 10 geçersiz kod: bir alışverişçinin denemeleri ötekilerin bütçesini bitirmez.
+   * - `orderId` (isteğe bağlı): kodu soran siparişin numarası. Kod bu siparişte zaten kullanılıyorsa `CODE_USED` yerine 200 döner: değerler siparişin gözünden (kendi ayırması kullanılabilir sayılır) ve `redemption` bu siparişin kod kullanımı (`listOrderRedemptions` ile aynı). Kullanım ayırmayı geçtiyse (düşüldü, iade edildi, karşılıksız) değerler kullanımın kaydından gelir. `orderId` gönderilince `redemption` her zaman vardır: kod bu siparişin değilse `null`. Süresi dolmuş ya da işletmenin elle bıraktığı bir ayırma `409 CODE_RELEASED`.
+   * - `shopper` (isteğe bağlı): alışverişçiyi kişisel veri taşımadan ayıran bir değer — ör. WooCommerce oturum anahtarının ya da müşteri numarasının bir sırla HMAC'i, base64url ya da hex, 8–64 karakter (`^[A-Za-z0-9_-]{8,64}$`). Rewloy saklamaz, yalnız sayaç anahtarında kullanır; e-posta ya da adın kendisini göndermeyin.
+   * - Kartın programında `shops.redeem` ister ("E-ticaret" rolünde kendi programı için vardır; işletmenin diğer programları için "E-ticaret · harcama"). Bağlantı koduyla kurulmuş bir eklentinin anahtarı yalnız kendi bağlantısında çağırabilir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.redeem` — Online ödemede kart kodu kullanımı.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/shops/{id}/checkout-codes/quote`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-quoteCheckoutCode | API referansı}
+   */
+  quoteCheckoutCode(args: T.QuoteCheckoutCodeArgs): Promise<T.QuoteCheckoutCodeData> {
+    return this._call('quoteCheckoutCode', args);
+  }
+
+  /**
+   * Siparişin kod kullanımları
+   *
+   * Bir siparişin Rewloy kodlarının şimdiki hâli, ilk kullanılan önce. `shops.read` ister.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.read` — Mağaza bağlantılarını görüntüleme.
+   *
+   * `GET /v1/shops/{id}/orders/{orderId}/redemptions`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listOrderRedemptions | API referansı}
+   */
+  listOrderRedemptions(args: T.ListOrderRedemptionsArgs): Promise<T.ListOrderRedemptionsData> {
+    return this._call('listOrderRedemptions', args);
+  }
+
+  /**
+   * Siparişe kodu bağla ve değeri ayır
+   *
+   * Sipariş verildiğinde, ödeme alınmadan önce: kodu bu siparişe bağlar ve kartın değerini ayırır (`held`). Ayrılan tutar kartın kullanılabilir bakiyesinden hemen düşer — kasada, POS satışında ve cüzdanda da. Ödenince `capture`, iptal ya da başarısızlıkta `release`; ödenmezse bağlantının bekletme süresi (`settings.holdDays`, varsayılan 7 gün) sonunda karta kendiliğinden döner.
+   * - `amountMinor`: `balance` kartta zorunlu — siparişe gerçekten uygulanan tutar (en fazla `quote` yanıtındaki `maxMinor`); kuponda ve indirim kartında bilgi için uygulanan indirim; `link` kartta yok sayılır.
+   * - `orderTotalMinor` (isteğe bağlı, önerilir): siparişin indirimden önceki toplamı, kuruş. Verilirse `amountMinor` onu aşamaz (`400 VALIDATION`): yüzde kodunda bile indirim siparişten büyük kaydedilmez.
+   * - Aynı sipariş ve aynı kodla tekrar: değişmeden döner (200). Ayrılmışken başka bir tutar: yeniden ayrılır (`generation` artar), `heldUntil` değişmez. Mağazanın ya da siparişin bıraktığı (`release`) bir ayırmayı aynı sipariş yalnız kodun 45 dakikası (`attachBy`) içinde yeniden ayırabilir; süresi dolmuş (`expired`) ya da işletmenin elle bıraktığı bir ayırma bir daha ayrılmaz (`409 CODE_RELEASED`, `details.reason`: `expired` ya da `merchant`; müşteri yeni kod oluşturur — "başka bir siparişte kullanıldı" denmesin). Başka bir sipariş: `CODE_USED`. Bir siparişte en fazla 3 kod, her karttan bir.
+   * - Ret olursa ödeme alınmamalıdır. Yanıt alınamazsa aynı çağrı güvenle yinelenir; yine alınamazsa siparişi reddedin ve `release` çağırın (ayırma yoksa da zararsızdır).
+   * - Kartın programında `shops.redeem` ister ("E-ticaret" rolünde kendi programı için vardır; işletmenin diğer programları için "E-ticaret · harcama"). Bağlantı koduyla kurulmuş bir eklentinin anahtarı yalnız kendi bağlantısında çağırabilir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.redeem` — Online ödemede kart kodu kullanımı.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/shops/{id}/orders/{orderId}/redemptions`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-holdCheckoutCode | API referansı}
+   */
+  holdCheckoutCode(args: T.HoldCheckoutCodeArgs): Promise<T.HoldCheckoutCodeData> {
+    return this._call('holdCheckoutCode', args);
+  }
+
+  /**
+   * Ödenen siparişin ayırmasını düş
+   *
+   * Sipariş ödendiğinde (`processing` ya da `completed`): siparişin ayrılmış her kod kullanımı düşülür — bakiyeli kartta ayırma bırakılır ve tutar harcanır (`captured`), kupon ve indirim kartında kullanım sayılır. Hepsi tek işlemde; tekrar çağrı yapılacak bir şey bulamaz ve aynı sonucu döndürür. Mağazanın imzalı sipariş bildirimi de aynı işi yapar: hangisi önce gelirse o yapar.
+   * - `captures`: bir kullanımda ayrılandan azını düşmek için (`amountMinor`, en az 1); kalanı karta döner. Verilmezse ayrılanın tamamı.
+   * - Süresi dolmuş ya da bırakılmış bir ayırma için ödeme gelirse kartta değer hâlâ varsa düşülür (`late: true`); yoksa hiçbir şey düşülmez, kullanım `unbacked` olur ve yanıt `409 HOLD_UNBACKED` (`details.redemptions` son hâl) — bakiye hiçbir zaman eksiye düşmez.
+   * - Kart bu arada kapatıldıysa `409 PASS_INACTIVE`: ayırma süresi dolana dek durur. Süresi dolmuş ya da bırakılmış bir ayırmanın kartı kapandıysa (ör. kasada sıfıra harcanan hediye kartı) kullanım `unbacked` olur (`409 HOLD_UNBACKED`).
+   * - Mağazanın imzalı `processing`/`completed` bildirimi bu çağrıdan önce gelirse ayrılanın TAMAMI düşülür (bildirimde kısmi tutar yoktur); sonra gelen kısmi `captures` bir şey değiştirmez. Kısmi düşüm isteyen eklenti, siparişi ödenmiş saymadan önce bu çağrıyı yapmalıdır.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.redeem` — Online ödemede kart kodu kullanımı.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/shops/{id}/orders/{orderId}/capture`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-captureCheckoutOrder | API referansı}
+   */
+  captureCheckoutOrder(args: T.CaptureCheckoutOrderArgs): Promise<T.CaptureCheckoutOrderData> {
+    return this._call('captureCheckoutOrder', args);
+  }
+
+  /**
+   * Siparişin ayırmasını bırak
+   *
+   * Sipariş iptal edildiğinde ya da başarısız olduğunda (ya da mağaza siparişi reddederken): ayrılmış her kod kullanımının tutarı karta döner (`released`). Ayrılmış olmayanlara dokunulmaz; tekrar çağrı aynı sonucu döndürür. `reason`: `cancelled`, `failed` ya da `shop` (varsayılan). Mağazanın imzalı bildirimi `cancelled`/`failed` durumunda da aynı işi yapar.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.redeem` — Online ödemede kart kodu kullanımı.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/shops/{id}/orders/{orderId}/release`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-releaseCheckoutOrder | API referansı}
+   */
+  releaseCheckoutOrder(args: T.ReleaseCheckoutOrderArgs): Promise<T.ReleaseCheckoutOrderData> {
+    return this._call('releaseCheckoutOrder', args);
+  }
+
+  /**
+   * İade edilen siparişin tutarını karta geri yükle
+   *
+   * - **Tam iade** (gövde boş): düşülen her bakiyenin henüz iade edilmemiş kısmı karta yeni bir kayıtla geri yüklenir (bir kez); kullanımlar `refunded` olur. Kullanılmış tek kullanımlık kupon yeniden açılmaz. Bakiyesi bitip kapanan hediye kartı yeniden açılır. Siparişin bu karta kazandırdığı (damga, puan, ziyaret, cashback) bağlantının `refundReverses` ayarına göre geri alınır, hiçbir zaman sıfırın altına inmeden: yanıtta `unearned` (zaten harcanmış kısım `short`). Mağazanın imzalı `refunded` bildirimi de aynısını yapar.
+   * - **Kısmi iade** (`amountMinor`): kendiliğinden yapılmaz; elle bir kullanıma (`redemptionId`, siparişte tek bakiyeli kullanım varsa gerekmez) en fazla düşülen − iade edilen kadar. `Idempotency-Key` zorunludur: aynı anahtar ve aynı tutarla tekrar iki kez yüklemez; aynı anahtar başka bir tutarla `422 IDEMPOTENCY_KEY_REUSED`. Kazanç geri alınmaz.
+   * - Siparişin kazancı bir kez geri alınır: ilk iade sıfır geri aldıysa da (kart kazandığını harcamıştı) sonraki çağrılar yeniden almaz, ilk sonucu döndürür.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.redeem` — Online ödemede kart kodu kullanımı.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/shops/{id}/orders/{orderId}/refund`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-refundCheckoutOrder | API referansı}
+   */
+  refundCheckoutOrder(args: T.RefundCheckoutOrderArgs): Promise<T.RefundCheckoutOrderData> {
+    return this._call('refundCheckoutOrder', args);
+  }
+
+  /**
+   * Bağlantının kod kullanımları
+   *
+   * Bu mağazada kullanılan Rewloy kodları, yeniden eskiye; `state` ile süzülür (`unbacked`: karşılıksız kalanlar). Sipariş numarası mağazanındır; kişisel veri yoktur. `shops.read` ister.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.read` — Mağaza bağlantılarını görüntüleme.
+   *
+   * `GET /v1/shops/{id}/redemptions`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listShopRedemptions | API referansı}
+   */
+  listShopRedemptions(args: T.ListShopRedemptionsArgs): Promise<Page<T.ListShopRedemptionsItem>> {
+    return this._call('listShopRedemptions', args);
+  }
+
+  /**
+   * Ayrılmış tutarı elle bırak
+   *
+   * İşletmenin kararı: ayrılmış (`held`) bir kod kullanımının tutarı karta döner (`released`, neden `merchant`); mağaza bu kodu bu siparişe bir daha ayıramaz. Önce neden: defter kaydının notu ve erişim kaydı olur. Kartın programında `scan.adjust` (manuel bakiye düzeltme) ister; yalnız ekip oturumu. Mağaza siparişi sonra öderse ödeme geç düşüm olarak denenir (kartta değer yoksa karşılıksız kalır).
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `scan.adjust` — Manuel bakiye düzeltme.
+   *
+   * `POST /v1/shops/{id}/redemptions/{redemptionId}/release`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-releaseShopRedemption | API referansı}
+   */
+  releaseShopRedemption(args: T.ReleaseShopRedemptionArgs): Promise<T.ReleaseShopRedemptionData> {
+    return this._call('releaseShopRedemption', args);
+  }
+
+  /**
+   * Elle iade
+   *
+   * Kısmi iade gibi kendiliğinden yapılmayan bir iade: düşülmüş bir bakiyeden en fazla düşülen − iade edilen kadarı karta yeni bir kayıtla geri yüklenir. Önce neden; kartın programında `scan.adjust` ister, yalnız ekip oturumu. `Idempotency-Key` zorunludur: aynı anahtarla tekrar bir kez yükler.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `scan.adjust` — Manuel bakiye düzeltme.
+   *
+   * `POST /v1/shops/{id}/redemptions/{redemptionId}/refund`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-refundShopRedemption | API referansı}
+   */
+  refundShopRedemption(args: T.RefundShopRedemptionArgs): Promise<T.RefundShopRedemptionData> {
+    return this._call('refundShopRedemption', args);
+  }
+
+  /**
+   * Ödeme adımı ayarları
+   *
+   * Mağazanın kart kodu ayarlarını değiştirir; yalnız gönderilenler değişir. Bağlantının programında `shops.manage` ister — eklentinin kendi anahtarı da kendi bağlantısının ayarlarını değiştirebilir (WordPress'teki Ayarlar). Her değişiklik eskisi ve yenisiyle kayda geçer.
+   * - `tax`: kart değerinin siparişe nasıl uygulanacağı (eklenti uygular). `refundReverses`: iade edilen siparişin kazancı. `holdDays`: 1–30.
+   * - `accepts.programIds`: işletmenin bu mağazada kodu kabul edilen diğer programları (bütün liste; boş liste hepsini kapatır). Yalnız etkin hediye kartı, cashback, kupon ve indirim kartı programları. Eklentinin anahtarı yalnız tavanının içinde açabilir, tavanı genişletemez (`403 OUT_OF_SCOPE`); bir kişi programda `shops.manage` taşıyorsa açabilir ve eklentiyle kurulmuş bir bağlantıda önce tavana ekler (`PUT /v1/shops/{id}/ceiling`). Kapatılan programın kodları hemen reddedilir; önceden ayrılmış tutarlar siparişleri bitene dek geçerlidir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `shops.manage` — Mağaza bağlantısı yönetimi.
+   *
+   * `PATCH /v1/shops/{id}/settings`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-setShopSettings | API referansı}
+   */
+  setShopSettings(args: T.SetShopSettingsArgs): Promise<T.SetShopSettingsData> {
+    return this._call('setShopSettings', args);
+  }
+
+  /**
+   * Eklentinin anahtarının kabul edebileceği programlar (tavan)
+   *
+   * Eklentiyle kurulmuş bir bağlantının anahtarına işletmenin diğer programlarının kodlarını kullanma yetkisi verir: "E-ticaret · harcama" rolü (yalnız `shops.redeem`, kart vermez), tam olarak bu programlarla sınırlı. Boş liste yetkiyi kaldırır; bağlantının açık programları yeni tavana indirilir. Bağlantı kurulurken tavan, kodu oluşturan kişinin verebileceği bütün programlardır; hiçbiri açık değildir.
+   * - Yalnız ekip oturumu; her programda `shops.manage`, ayrıca `apikeys.manage` ve — bir yetki verildiği için — `team.manage` ile tüm şubelerde `shops.redeem` (alt küme kuralı). Değişiklik ekip kaydına `grant.given` / `grant.revoked` olarak geçer.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `shops.manage` — Mağaza bağlantısı yönetimi.
+   *
+   * `PUT /v1/shops/{id}/ceiling`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-setShopCeiling | API referansı}
+   */
+  setShopCeiling(args: T.SetShopCeilingArgs): Promise<T.SetShopCeilingData> {
+    return this._call('setShopCeiling', args);
+  }
+
+  // ------------------------------------------------------------ Kart sahibi
+
+  /**
+   * Online alışveriş kodları
+   *
+   * "Online alışverişte kullan" düğmesi için: `online` işletmenin açık bir mağazasının bu kartı kabul edip etmediğidir (değilse düğmeyi göstermeyin). `offer` bir kodun şimdi ne vereceği (bakiyeli kartta `maxMinor` kullanılabilir bakiye), verilemiyorsa `refusal` nedenidir (`INSUFFICIENT_BALANCE`, `PASS_USED_UP`, `VOUCHER_NOT_ONLINE`, `PASS_INACTIVE`, `NOT_ONLINE` …).
+   * `holds`: karttan şu an bir online siparişe ayrılmış tutarlar ve en geç ne zaman döneceği ("₺40,00 bir online siparişe ayrıldı…" satırı). `codes`: son 7 günün kodları, kodun kendisi olmadan.
+   *
+   * **Kimlik:** kart sahibi oturumu.
+   *
+   * `GET /v1/holder/cards/{serial}/checkout-codes`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-holderCheckoutCodes | API referansı}
+   */
+  holderCheckoutCodes(args: T.HolderCheckoutCodesArgs): Promise<T.HolderCheckoutCodesData> {
+    return this._call('holderCheckoutCodes', args);
+  }
+
+  /**
+   * Online alışveriş kodu oluştur
+   *
+   * Kart için tek kullanımlık bir ödeme kodu (`RW-XXXX-XXXX`) oluşturur; mağazanın ödeme adımında kupon alanına yazılır. 15 dakika içinde kullanılmaya başlanmalı, 45 dakika içinde bir siparişe bağlanmalıdır; yalnız işletmenin kendi mağazalarında geçer. Kod oluşturmak değer ayırmaz: ayırma sipariş verilince yapılır.
+   * - `amountMinor`: yalnız hediye kartı ve cashback — kodun en fazla düşebileceği tutar; verilmezse kullanılabilir bakiyenin tamamı.
+   * - Kod **yalnız bu yanıtta** gelir. Karta bir kodun oluşturulduğu, kartı tutan hesapların diğer cihazlarına İşlem bildirimiyle söylenir.
+   * - Sınırlar: kart başına 3 açık kod (`TOO_MANY_CODES`), saatte 10 (`RATE_LIMITED`).
+   *
+   * **Kimlik:** kart sahibi oturumu.
+   *
+   * `POST /v1/holder/cards/{serial}/checkout-codes`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-mintHolderCheckoutCode | API referansı}
+   */
+  mintHolderCheckoutCode(args: T.MintHolderCheckoutCodeArgs): Promise<T.MintHolderCheckoutCodeData> {
+    return this._call('mintHolderCheckoutCode', args);
+  }
+
+  /**
+   * Kodu iptal et
+   *
+   * Açık bir kodu hemen geçersiz kılar (iptal edilmiş kodu tekrar iptal etmek de 204). Bir siparişe bağlanmış kod iptal edilemez (`409 CODE_ATTACHED`): sipariş iptal edilirse ayrılan tutar karta kendiliğinden döner.
+   *
+   * **Kimlik:** kart sahibi oturumu.
+   *
+   * `DELETE /v1/holder/cards/{serial}/checkout-codes/{id}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-cancelHolderCheckoutCode | API referansı}
+   */
+  cancelHolderCheckoutCode(args: T.CancelHolderCheckoutCodeArgs): Promise<void> {
+    return this._call('cancelHolderCheckoutCode', args);
   }
 
   // ------------------------------------------------------------ Ekip
@@ -3544,6 +3892,7 @@ export abstract class RewloyMethods {
    * E-posta ekle: kod gönder
    *
    * Adrese 6 haneli bir kod gider (15 dakika). Kodu bu yanıttaki `request` ile `POST /v1/holder/identities/email/verify` gönderin. Doğrulanan adresle başka işletmelerden aldığınız kartlar da hesaba gelir. IP başına 15 dakikada 12, hesap başına saatte 10.
+   * - **Idempotency-Key** (isteğe bağlı, önerilir; 8–64 karakter, her yeni istek için yeni bir UUID): aynı anahtar ve aynı gövdeyle tekrar yeni kod GÖNDERMEZ, ilk yanıtı (aynı `request`) `Idempotent-Replayed: true` ile döndürür ve sınırlardan düşmez — bağlantısı kopan uygulama güvenle yineler. Aynı anahtar başka bir gövdeyle `422 IDEMPOTENCY_KEY_REUSED`; ilk istek sürerken `409 IDEMPOTENCY_IN_PROGRESS` (bir şey gönderilmez). Yanıt şifreli saklanır, 7 gün tekrar edilir; kodun kendisi 15 dakika geçerlidir, yeni kod için yeni anahtar gönderin. Oturumsuz çağrıda anahtar istemcinin IP adresine bağlıdır. Başlık yoksa her çağrı yeni bir kod ve yeni bir `request` demektir.
    *
    * **Kimlik:** kart sahibi oturumu.
    *
@@ -3579,6 +3928,7 @@ export abstract class RewloyMethods {
    * - Yalnız Türkiye cep telefonu numaraları (`+90 5…`); değilse `400 INVALID_PHONE`. Telefonla giriş bu ortamda açık değilse `501 NOT_ENABLED`. `channel` verilmezse şu an açık olan ilk yol (önce WhatsApp); istenen yol açık değilse `501 NOT_ENABLED`, bugünkü bütçesi dolduysa `503 PHONE_BUSY` (`details.channels`: şu an açık olanlar).
    * - Eklenen numarayla bundan sonra girilir ve numarayla katılınan kartlar bu hesaba gelir; daha önce başka biri o numarayla katıldıysa o kartlar gelmez (numaralar el değiştirir).
    * - Bir numaraya saatte 3, günde 6 kod gider, WhatsApp ve SMS birlikte (fazlası sessizce gönderilmez). IP başına saatte 10, hesap başına saatte 10.
+   * - **Idempotency-Key** (isteğe bağlı, önerilir; 8–64 karakter, her yeni istek için yeni bir UUID): aynı anahtar ve aynı gövdeyle tekrar yeni kod GÖNDERMEZ, ilk yanıtı (aynı `request`) `Idempotent-Replayed: true` ile döndürür ve sınırlardan düşmez — bağlantısı kopan uygulama güvenle yineler. Aynı anahtar başka bir gövdeyle `422 IDEMPOTENCY_KEY_REUSED`; ilk istek sürerken `409 IDEMPOTENCY_IN_PROGRESS` (bir şey gönderilmez). Yanıt şifreli saklanır, 7 gün tekrar edilir; kodun kendisi 15 dakika geçerlidir, yeni kod için yeni anahtar gönderin. Oturumsuz çağrıda anahtar istemcinin IP adresine bağlıdır. Başlık yoksa her çağrı yeni bir kod ve yeni bir `request` demektir.
    *
    * **Kimlik:** kart sahibi oturumu.
    *
@@ -3647,6 +3997,7 @@ export abstract class RewloyMethods {
    * Hesabın bir e-postasının ya da numarasının (`GET /v1/holder/account` listesindeki kimliği) yerine yenisi (ADR 170): adrese `email`, numaraya `phone` (aynı türden). Yeniye 6 haneli bir kod gider; kodu bu yanıttaki `request` ile `POST /v1/holder/identities/{id}/replace/verify` gönderin.
    * - Uygulamanın oturumu cihazın kanıtıdır (web'deki cihaz anahtarının yerine).
    * - Yeni adres ya da numara eskisiyle aynıysa ya da zaten bu hesabınsa `409 IDENT_SAME`. Numara için telefonla giriş açık değilse `501 NOT_ENABLED`; `channel` ve sınırlar `POST /v1/holder/identities/phone` gibidir. Hesap başına saatte 10 (ekleme ve değiştirme birlikte).
+   * - **Idempotency-Key** (isteğe bağlı, önerilir; 8–64 karakter, her yeni istek için yeni bir UUID): aynı anahtar ve aynı gövdeyle tekrar yeni kod GÖNDERMEZ, ilk yanıtı (aynı `request`) `Idempotent-Replayed: true` ile döndürür ve sınırlardan düşmez — bağlantısı kopan uygulama güvenle yineler. Aynı anahtar başka bir gövdeyle `422 IDEMPOTENCY_KEY_REUSED`; ilk istek sürerken `409 IDEMPOTENCY_IN_PROGRESS` (bir şey gönderilmez). Yanıt şifreli saklanır, 7 gün tekrar edilir; kodun kendisi 15 dakika geçerlidir, yeni kod için yeni anahtar gönderin. Oturumsuz çağrıda anahtar istemcinin IP adresine bağlıdır. Başlık yoksa her çağrı yeni bir kod ve yeni bir `request` demektir.
    *
    * **Kimlik:** kart sahibi oturumu.
    *
@@ -4016,6 +4367,7 @@ export abstract class RewloyMethods {
    * - İsteğe bağlı olarak yalnız hesabın sahibinin bilebileceği bilgiler talebi güçlendirir: kart numaraları (`cards`, en çok 5), kartların olduğu işletmeler (`businesses`, en çok 5), kartın son kullanıldığı zaman (`lastVisit`).
    * - `previousToken`: bu kurulumun daha önceki `rwh_` oturumu (süresi dolmuş olsa da): kurulumun hesaba yeni olmadığını söyler.
    * - Yanıt eski adresin ya da numaranın kayıtlı olup olmadığını **söylemez**. Sınırlar: IP başına saatte 5 talep, aynı eski adres ya da numara için günde 5; kod sınırları `POST /v1/holder/login` gibidir. Telefonla giriş açık değilse numara `501 NOT_ENABLED`.
+   * - **Idempotency-Key** (isteğe bağlı, önerilir; 8–64 karakter, her yeni istek için yeni bir UUID): aynı anahtar ve aynı gövdeyle tekrar yeni kod GÖNDERMEZ, ilk yanıtı (aynı `request`) `Idempotent-Replayed: true` ile döndürür ve sınırlardan düşmez — bağlantısı kopan uygulama güvenle yineler. Aynı anahtar başka bir gövdeyle `422 IDEMPOTENCY_KEY_REUSED`; ilk istek sürerken `409 IDEMPOTENCY_IN_PROGRESS` (bir şey gönderilmez). Yanıt şifreli saklanır, 7 gün tekrar edilir; kodun kendisi 15 dakika geçerlidir, yeni kod için yeni anahtar gönderin. Oturumsuz çağrıda anahtar istemcinin IP adresine bağlıdır. Başlık yoksa her çağrı yeni bir kod ve yeni bir `request` demektir.
    *
    * **Kimlik:** kimlik gerekmez.
    *
