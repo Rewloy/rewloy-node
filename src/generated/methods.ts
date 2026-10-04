@@ -10,6 +10,169 @@ export abstract class RewloyMethods {
   protected abstract _call<K extends Exclude<T.OperationId, T.StreamOperationId>>(id: K, args: T.Operations[K]['args'] | undefined): Promise<T.Operations[K]['result']>;
   protected abstract _open<K extends T.StreamOperationId>(id: K, args: T.Operations[K]['args'] | undefined): EventStream;
 
+  // ------------------------------------------------------------ Kartlar
+
+  /**
+   * Kart ver
+   *
+   * Bir programdan kart verir. E-posta gönderilirse kart o müşteriye bağlanır (yoksa oluşturulur) ve `kvkkConsent: true` gönderilmelidir: bu, işletmenin müşteriye kendi aydınlatma metnini sunduğunu beyan etmesidir; beyanın doğruluğundan işletme sorumludur. Bir rıza kutusu olarak sormayın. Dönen `cardUrl` müşterinin özel kart bağlantısıdır: müşteriye iletin, kayıtlara yazmayın. Hediye kartında `faceMinor` (kuruş) zorunludur.
+   * - **Idempotency-Key** (isteğe bağlı, önerilir): her çağrı yeni bir kart açar; başlıkla aynı anahtar ve aynı gövdeyle tekrar yeni kart açmaz, ilk yanıtı (aynı kart, aynı bağlantı) `Idempotent-Replayed: true` ile döndürür. Aynı anahtar başka bir gövdeyle `422 IDEMPOTENCY_KEY_REUSED`. Bir siparişe kart açan mağaza için sipariş başına sabit bir anahtar iyi bir seçimdir. Saklanan yanıt şifrelidir ve 7 gün tutulur; tekrar yalnız kimlik o programda hâlâ kart verebiliyorsa döner (yoksa `403 FORBIDDEN`).
+   * - **Bir sipariş için kart** (`orderId` ve `shopId` birlikte, `email` ile): kartı kazandıran sipariş de bu karta sayılır, mağazanın sipariş bildirimi karttan önce ya da sonra gelsin. Bildirim henüz gelmediyse (`order.result: waiting`) geldiğinde bu kartı bulur. Önce gelip "Kartı yok" diye kaydedildiyse (`resend`) sipariş yeniden açılır: mağaza siparişi 7 gün içinde yeniden gönderdiğinde (aynı imzalı bildirim; WooCommerce eklentisi webhook'unun o siparişi yeniden teslimiyle) siparişin kendi e-postası ve tutarıyla bu karta işlenir. Tutar hiçbir zaman bu çağrıdan alınmaz, siparişten hiçbir şey saklanmaz ve sipariş yine bir kez sayılır. Bağlantı bu işletmenin ve bu programın olmalıdır (`404 SHOP_NOT_FOUND`, `409 SHOP_PROGRAM_MISMATCH`).
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `passes.issue` — Kart verme.
+   *
+   * `POST /v1/passes`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-issuePass | API referansı}
+   */
+  issuePass(args: T.IssuePassArgs): Promise<T.IssuePassData> {
+    return this._call('issuePass', args);
+  }
+
+  /**
+   * Bir kartın durumu
+   *
+   * Bakiye, ilerleme, ödül hazırlığı ve seviye — müşterinin cüzdanında gördüğüyle aynı.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `passes.read` — Kartları görüntüleme.
+   *
+   * `GET /v1/passes/{serial}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-getPass | API referansı}
+   */
+  getPass(args: T.GetPassArgs): Promise<T.GetPassData> {
+    return this._call('getPass', args);
+  }
+
+  /**
+   * Kartın bir şubedeki kasa kuralları
+   *
+   * Kasada işlem yapmadan önce: kart bu şubede kullanılabilir mi, hangi şubelerde geçerli, şu an burada hangi kasa kampanyası çalışıyor ve kasiyerin göreceği uyarılar (tarayıcıdaki şeritlerin aynısı). `allowed: false` iken işlem `WRONG_LOCATION` ile reddedilir (ADR 139).
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `scan.use` — Tarayıcıyı kullanma.
+   *
+   * `GET /v1/passes/{serial}/till`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-getPassTill | API referansı}
+   */
+  getPassTill(args: T.GetPassTillArgs): Promise<T.GetPassTillData> {
+    return this._call('getPassTill', args);
+  }
+
+  /**
+   * Kasada işlem
+   *
+   * Karta, bir şubede kasa işlemi uygular. **Idempotency-Key zorunludur**: aynı anahtarla tekrar, bakiyeyi ikinci kez değiştirmez ve ilk sonucu döndürür (`duplicate: true`). Salt-okunur hesapta da çalışır: mevcut kartlar çalışmaya devam eder.
+   * | action | kart | gerekli alan |
+   * |---|---|---|
+   * | `earn-stamps` | damga | `count` (varsayılan 1) |
+   * | `redeem-stamps` | damga | — |
+   * | `earn-points` | puan | `amountMinor` (harcama, kuruş) |
+   * | `redeem-reward` | puan | `rewardIndex` |
+   * | `spend-points` | puan | `points` |
+   * | `visit` | VIP | — |
+   * | `spend` | hediye kartı, cashback | `amountMinor` |
+   * | `accrue` | cashback | `amountMinor` (alışveriş tutarı) |
+   * | `load` | hediye kartı | `amountMinor` — ayrıca `instruments.issue` yetkisi |
+   * | `use` | kupon, indirim | — |
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `scan.use` — Tarayıcıyı kullanma.
+   *
+   * Salt-okunur hesapta da çalışır.
+   *
+   * `POST /v1/passes/{serial}/actions`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-passAction | API referansı}
+   */
+  passAction(args: T.PassActionArgs): Promise<T.PassActionData> {
+    return this._call('passAction', args);
+  }
+
+  // ------------------------------------------------------------ Katılım
+
+  /**
+   * Katılım formu
+   *
+   * Bir programın katılım formunu kendi uygulamanızda çizmek için: işletme ve program adı, türü, e-postadan başka sorulan alanlar (zorunlu mu), renkler ve görseller. Kimlik istemez.
+   *
+   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
+   *
+   * `GET /v1/public/programs/{id}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-publicProgram | API referansı}
+   */
+  publicProgram(args: T.PublicProgramArgs): Promise<T.PublicProgramData> {
+    return this._call('publicProgram', args);
+  }
+
+  /**
+   * Programa katıl
+   *
+   * Kişi kendi kartını alır; kartın bağlantısı e-postasına da gider (sekme kapansa da kart kaybolmaz). Aynı e-postanın bu programda zaten kartı varsa yeni kart verilmez, mevcut kartın bağlantısı **yalnız kişinin e-postasına** gider (`created: false`). Formun zorunlu alanları `GET /v1/public/programs/{id}` ile öğrenilir. IP başına 10 dakikada 30.
+   *
+   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
+   *
+   * `POST /v1/public/programs/{id}/join`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-joinProgram | API referansı}
+   */
+  joinProgram(args: T.JoinProgramArgs): Promise<T.JoinProgramData> {
+    return this._call('joinProgram', args);
+  }
+
+  /**
+   * Bir kod
+   *
+   * Hediye kartı, kupon ya da indirim kodunun ne verdiği ve hâlâ alınıp alınamayacağı. Kimlik istemez; yalnız kodu bilen birinin öğrenebileceği kadarını söyler.
+   *
+   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
+   *
+   * `GET /v1/public/codes/{code}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-publicCode | API referansı}
+   */
+  publicCode(args: T.PublicCodeArgs): Promise<T.PublicCodeData> {
+    return this._call('publicCode', args);
+  }
+
+  /**
+   * Kodu kullan, kartı al
+   *
+   * Kişi koddan kartını alır. Kişi başına sınır dolduysa `ALREADY_CLAIMED` döner ve mevcut kartın bağlantısı **yalnız kişinin e-postasına** gider. IP başına 10 dakikada 30.
+   *
+   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
+   *
+   * `POST /v1/public/codes/{code}/claim`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-claimCode | API referansı}
+   */
+  claimCode(args: T.ClaimCodeArgs): Promise<T.ClaimCodeData> {
+    return this._call('claimCode', args);
+  }
+
+  /**
+   * Kart bağlantımı e-postama gönder
+   *
+   * Kart yazılan adrese kayıtlıysa bağlantısı o adrese gider. Yanıt her durumda aynıdır (kartın kime ait olduğu sızmaz). IP başına saatte 10, kart başına saatte 3.
+   *
+   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
+   *
+   * `POST /v1/public/cards/{serial}/email-link`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-emailCardLink | API referansı}
+   */
+  emailCardLink(args: T.EmailCardLinkArgs): Promise<T.EmailCardLinkData> {
+    return this._call('emailCardLink', args);
+  }
+
   // ------------------------------------------------------------ Belge
 
   /**
@@ -81,7 +244,7 @@ export abstract class RewloyMethods {
   /**
    * Kim olarak bağlıyım?
    *
-   * Ekip oturumu: kişi, iki adımlı doğrulama durumu ve koltuk taşıdığı işletmeler (her biri için yetkiler). API anahtarı: anahtarın kendisi, işletmesi, rolü ve kapsamı. Bir entegrasyonun ilk çağrısı olarak bağlantıyı doğrulamak için idealdir.
+   * Ekip oturumu: kişi, iki adımlı doğrulama durumu ve koltuk taşıdığı işletmeler (her biri için yetkiler). API anahtarı: anahtarın kendisi, işletmesi, rolü, kapsamı, etkin yetkileri (`permissions`) ve bir mağaza eklentisinin anahtarıysa bağlantısı (`key.shopId`). Bir entegrasyonun ilk çağrısı olarak bağlantıyı doğrulamak için idealdir. `mode`: çağıranın test ortamında mı (`test`) gerçek işletmede mi (`live`) çalıştığı; ekip oturumu bir işletme seçmediyse `null`.
    *
    * **Kimlik:** ekip oturumu, API anahtarı.
    *
@@ -551,90 +714,6 @@ export abstract class RewloyMethods {
     return this._call('setTeam2fa', args);
   }
 
-  // ------------------------------------------------------------ Kartlar
-
-  /**
-   * Kart ver
-   *
-   * Bir programdan kart verir. E-posta gönderilirse kart o müşteriye bağlanır (yoksa oluşturulur) ve `kvkkConsent: true` gönderilmelidir: bu, işletmenin müşteriye kendi aydınlatma metnini sunduğunu beyan etmesidir; beyanın doğruluğundan işletme sorumludur. Bir rıza kutusu olarak sormayın. Dönen `cardUrl` müşterinin özel kart bağlantısıdır: müşteriye iletin, kayıtlara yazmayın. Hediye kartında `faceMinor` (kuruş) zorunludur.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `passes.issue` — Kart verme.
-   *
-   * `POST /v1/passes`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-issuePass | API referansı}
-   */
-  issuePass(args: T.IssuePassArgs): Promise<T.IssuePassData> {
-    return this._call('issuePass', args);
-  }
-
-  /**
-   * Bir kartın durumu
-   *
-   * Bakiye, ilerleme, ödül hazırlığı ve seviye — müşterinin cüzdanında gördüğüyle aynı.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `passes.read` — Kartları görüntüleme.
-   *
-   * `GET /v1/passes/{serial}`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-getPass | API referansı}
-   */
-  getPass(args: T.GetPassArgs): Promise<T.GetPassData> {
-    return this._call('getPass', args);
-  }
-
-  /**
-   * Kartın bir şubedeki kasa kuralları
-   *
-   * Kasada işlem yapmadan önce: kart bu şubede kullanılabilir mi, hangi şubelerde geçerli, şu an burada hangi kasa kampanyası çalışıyor ve kasiyerin göreceği uyarılar (tarayıcıdaki şeritlerin aynısı). `allowed: false` iken işlem `WRONG_LOCATION` ile reddedilir (ADR 139).
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `scan.use` — Tarayıcıyı kullanma.
-   *
-   * `GET /v1/passes/{serial}/till`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-getPassTill | API referansı}
-   */
-  getPassTill(args: T.GetPassTillArgs): Promise<T.GetPassTillData> {
-    return this._call('getPassTill', args);
-  }
-
-  /**
-   * Kasada işlem
-   *
-   * Karta, bir şubede kasa işlemi uygular. **Idempotency-Key zorunludur**: aynı anahtarla tekrar, bakiyeyi ikinci kez değiştirmez ve ilk sonucu döndürür (`duplicate: true`). Salt-okunur hesapta da çalışır: mevcut kartlar çalışmaya devam eder.
-   * | action | kart | gerekli alan |
-   * |---|---|---|
-   * | `earn-stamps` | damga | `count` (varsayılan 1) |
-   * | `redeem-stamps` | damga | — |
-   * | `earn-points` | puan | `amountMinor` (harcama, kuruş) |
-   * | `redeem-reward` | puan | `rewardIndex` |
-   * | `spend-points` | puan | `points` |
-   * | `visit` | VIP | — |
-   * | `spend` | hediye kartı, cashback | `amountMinor` |
-   * | `accrue` | cashback | `amountMinor` (alışveriş tutarı) |
-   * | `load` | hediye kartı | `amountMinor` — ayrıca `instruments.issue` yetkisi |
-   * | `use` | kupon, indirim | — |
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `scan.use` — Tarayıcıyı kullanma.
-   *
-   * Salt-okunur hesapta da çalışır.
-   *
-   * `POST /v1/passes/{serial}/actions`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-passAction | API referansı}
-   */
-  passAction(args: T.PassActionArgs): Promise<T.PassActionData> {
-    return this._call('passAction', args);
-  }
-
   // ------------------------------------------------------------ Programlar
 
   /**
@@ -890,6 +969,263 @@ export abstract class RewloyMethods {
     return this._call('programJoinQr', args);
   }
 
+  // ------------------------------------------------------------ Müşteriler
+
+  /**
+   * Müşteriler
+   *
+   * Kimliğin şube kapsamındaki müşteriler, kartlarıyla. Paneldeki bütün süzgeçler burada da vardır. Bir müşteri, kapsamınızdaki bir şubede kartı ya da ziyareti varsa görünür. Her müşterinin adresleri ve numaraları `identifiers` içinde, durumlarıyla: doğrulanmış olanı yalnız müşteri değiştirir; API bir adresi ya da numarayı değiştirmez (ADR 168).
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/customers`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listCustomers | API referansı}
+   */
+  listCustomers(args?: T.ListCustomersArgs): Promise<Page<T.ListCustomersItem>> {
+    return this._call('listCustomers', args);
+  }
+
+  /**
+   * Müşteriler, kart kart
+   *
+   * Aynı süzgeçlerle, her satırda bir kart (panelde "kart kart" görünüm).
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/customers/cards`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listCustomerCards | API referansı}
+   */
+  listCustomerCards(args?: T.ListCustomerCardsArgs): Promise<Page<T.ListCustomerCardsItem>> {
+    return this._call('listCustomerCards', args);
+  }
+
+  /**
+   * Bir müşteri
+   *
+   * Panelin müşteri sayfasındaki her şey: iletişim (`identifiers`: her adres ve numara, durumuyla), kartlar, ziyaret sayıları ve ritmi, şubeler, onaylar, segmentler. Kişi yalnız bu işletmedeki hâliyle görünür; Rewloy Cüzdan hesabı, başka işletmedeki kartları ve kayıtları hiçbir zaman.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/customers/{id}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-getCustomer | API referansı}
+   */
+  getCustomer(args: T.GetCustomerArgs): Promise<T.GetCustomerData> {
+    return this._call('getCustomer', args);
+  }
+
+  /**
+   * Müşterinin geçmişi
+   *
+   * Bu işletmede olan her şey, yeniden eskiye: defter hareketleri (puan/damga/bakiye, ödül, harcama), ziyaretler, gönderilen mesajlar, verilen kartlar ve müşterinin bu kayıttaki bir numarayı bu işletmede bir katılımla, kendi koduyla doğruladığı an (`contact`: `verified:phone`; `text` numara). Adresin doğrulandığı an gelmez: başka bir işletmede olmuş olabilir. Müşterinin bir adresi ya da numarayı yenisiyle değiştirdiği an da gelir (`changed:email`, `changed:phone`; `text` boş). `kind` ile süzülür, `passId` ile tek kart (o zaman `contact` satırı gelmez). `limit` en fazla 100.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/customers/{id}/timeline`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-customerTimeline | API referansı}
+   */
+  customerTimeline(args: T.CustomerTimelineArgs): Promise<Page<T.CustomerTimelineItem>> {
+    return this._call('customerTimeline', args);
+  }
+
+  /**
+   * Kart bağlantısını yeniden gönder
+   *
+   * Kartın özel bağlantısını yalnız kart sahibinin kendi e-postasına gönderir (size dönmez). Müşteri başına saatte 3. `sent: false`: adres e-posta almayı reddetmiş, geri dönmüş ya da müşterinin e-postası yok.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `POST /v1/customers/{id}/cards/{passId}/send-link`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-sendCustomerCardLink | API referansı}
+   */
+  sendCustomerCardLink(args: T.SendCustomerCardLinkArgs): Promise<T.SendCustomerCardLinkData> {
+    return this._call('sendCustomerCardLink', args);
+  }
+
+  /**
+   * Müşteriyi engelle
+   *
+   * Müşterinin e-postasını ve doğrulanmış numaralarını engelli listesine ekler (ADR 168): bunlardan biriyle yeni kart alınamaz; Rewloy Cüzdan'da aynı hesap, bunlardan birini tuttuğu sürece, başka bir adresi ya da numarasıyla da alamaz. Yazılan (doğrulanmamış) telefon engellenmez: kimse kanıtlamadı, başkasının olabilir. `endCards: true` ile açık kartları da kapatılır (her cüzdana bir kez haber gider). Neden kayda geçer; adres ya da numara değil, özeti saklanır. Ne engellendiyse `entries` içinde; kaldırmak: `DELETE /v1/blocked-emails/{hash}` ya da `DELETE /v1/blocked-phones/{hash}`.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.manage` — Müşteri yönetimi.
+   *
+   * `POST /v1/customers/{id}/block`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-blockCustomer | API referansı}
+   */
+  blockCustomer(args: T.BlockCustomerArgs): Promise<T.BlockCustomerData> {
+    return this._call('blockCustomer', args);
+  }
+
+  /**
+   * Müşteriyi sil (KVKK)
+   *
+   * Bu işletmedeki kişi kaydını ve kişisel verisini siler, kartlarını kapatır — kişinin kendi silme isteğiyle aynı silici. **Geri alınamaz**; bu yüzden yalnız ekip oturumuyla ve oturumu açan kişinin şifresiyle (`password`) yapılır, API anahtarıyla yapılamaz. Defter ve ziyaret sayıları kişisiz kalır.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `customers.manage` — Müşteri yönetimi.
+   *
+   * `POST /v1/customers/{id}/erase`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-eraseCustomer | API referansı}
+   */
+  eraseCustomer(args: T.EraseCustomerArgs): Promise<void> {
+    return this._call('eraseCustomer', args);
+  }
+
+  /**
+   * Engellenen adresler
+   *
+   * Yeniden eskiye. Adresler özet ve maskeli ipucuyla görünür; bir adresin listede olup olmadığını `GET /v1/blocked-emails/check` ile sorun. Engellenen numaralar `GET /v1/blocked-phones` ile.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/blocked-emails`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listBlockedEmails | API referansı}
+   */
+  listBlockedEmails(args?: T.ListBlockedEmailsArgs): Promise<Page<T.ListBlockedEmailsItem>> {
+    return this._call('listBlockedEmails', args);
+  }
+
+  /**
+   * Bir adresi engelle
+   *
+   * Henüz müşteri olmayan bir adres de engellenebilir. Tüm şubelerde müşteri yönetimi yetkisi gerekir. Aynı adres yeniden engellenirse neden güncellenir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.manage` — Müşteri yönetimi.
+   *
+   * `POST /v1/blocked-emails`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-blockEmail | API referansı}
+   */
+  blockEmail(args: T.BlockEmailArgs): Promise<T.BlockEmailData> {
+    return this._call('blockEmail', args);
+  }
+
+  /**
+   * Bu adres engelli mi?
+   *
+   * Tam adresle sorulur (yalnız özetler saklandığı için arama yapılamaz).
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/blocked-emails/check`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-checkBlockedEmail | API referansı}
+   */
+  checkBlockedEmail(args: T.CheckBlockedEmailArgs): Promise<T.CheckBlockedEmailData> {
+    return this._call('checkBlockedEmail', args);
+  }
+
+  /**
+   * Engeli kaldır
+   *
+   * Adres yeniden kart alabilir. Tüm şubelerde müşteri yönetimi yetkisi gerekir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.manage` — Müşteri yönetimi.
+   *
+   * `DELETE /v1/blocked-emails/{hash}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-unblockEmail | API referansı}
+   */
+  unblockEmail(args: T.UnblockEmailArgs): Promise<void> {
+    return this._call('unblockEmail', args);
+  }
+
+  /**
+   * Engellenen numaralar
+   *
+   * Yeniden eskiye (ADR 168). Numaralar anahtarlı özet ve maskeli ipucuyla görünür; bir numaranın listede olup olmadığını `GET /v1/blocked-phones/check` ile sorun.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/blocked-phones`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listBlockedPhones | API referansı}
+   */
+  listBlockedPhones(args?: T.ListBlockedPhonesArgs): Promise<Page<T.ListBlockedPhonesItem>> {
+    return this._call('listBlockedPhones', args);
+  }
+
+  /**
+   * Bir numarayı engelle
+   *
+   * Bu numarayla yeni kart alınamaz: katılımda, kodla alırken, Rewloy Cüzdan'da ve API ile. Numarayı engellendiği sırada tutan cüzdan hesabı, onu tuttuğu sürece başka bir adresi ya da numarasıyla da alamaz. Henüz müşteri olmayan bir numara da engellenebilir. Numaralar el değiştirebilir: numarayı sonra alan da o numarayla kart alamaz, ama başka adres ve numaraları etkilenmez. Tüm şubelerde müşteri yönetimi yetkisi gerekir. Aynı numara yeniden engellenirse neden güncellenir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.manage` — Müşteri yönetimi.
+   *
+   * `POST /v1/blocked-phones`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-blockPhone | API referansı}
+   */
+  blockPhone(args: T.BlockPhoneArgs): Promise<T.BlockPhoneData> {
+    return this._call('blockPhone', args);
+  }
+
+  /**
+   * Bu numara engelli mi?
+   *
+   * Bütün numarayla sorulur (yalnız anahtarlı özetler saklandığı için arama yapılamaz). Yalnız Türkiye cep telefonları.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/blocked-phones/check`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-checkBlockedPhone | API referansı}
+   */
+  checkBlockedPhone(args: T.CheckBlockedPhoneArgs): Promise<T.CheckBlockedPhoneData> {
+    return this._call('checkBlockedPhone', args);
+  }
+
+  /**
+   * Numaranın engelini kaldır
+   *
+   * Numara yeniden kart alabilir. Tüm şubelerde müşteri yönetimi yetkisi gerekir.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.manage` — Müşteri yönetimi.
+   *
+   * `DELETE /v1/blocked-phones/{hash}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-unblockPhone | API referansı}
+   */
+  unblockPhone(args: T.UnblockPhoneArgs): Promise<void> {
+    return this._call('unblockPhone', args);
+  }
+
   // ------------------------------------------------------------ Kodlar
 
   /**
@@ -953,7 +1289,7 @@ export abstract class RewloyMethods {
   /**
    * Koddan verilen kartlar
    *
-   * Yeniden eskiye; `status` ile süzülür. Hediye kartında `balance` kalan tutardır (kuruş).
+   * Yeniden eskiye; `status` ile süzülür. Hediye kartında `balance` kalan tutardır (kuruş). Kimliğin `customers.read` yetkisi de varsa kartı alanın bu işletmedeki adresleri ve numaraları `identifiers` içinde gelir, durumlarıyla: numarayla alınan kartın kişisi numarasıyla tanınır (ADR 168). Bu yetki yoksa ya da kişi kimliğin şube kapsamı dışındaysa `identifiers` gelmez: müşterinin iletişim bilgisi müşteri okuma yetkisiyle görülür.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
@@ -1033,195 +1369,6 @@ export abstract class RewloyMethods {
    */
   batchQr(args: T.BatchQrArgs): Promise<Blob> {
     return this._call('batchQr', args);
-  }
-
-  // ------------------------------------------------------------ Müşteriler
-
-  /**
-   * Müşteriler
-   *
-   * Kimliğin şube kapsamındaki müşteriler, kartlarıyla. Paneldeki bütün süzgeçler burada da vardır. Bir müşteri, kapsamınızdaki bir şubede kartı ya da ziyareti varsa görünür.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `GET /v1/customers`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-listCustomers | API referansı}
-   */
-  listCustomers(args?: T.ListCustomersArgs): Promise<Page<T.ListCustomersItem>> {
-    return this._call('listCustomers', args);
-  }
-
-  /**
-   * Müşteriler, kart kart
-   *
-   * Aynı süzgeçlerle, her satırda bir kart (panelde "kart kart" görünüm).
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `GET /v1/customers/cards`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-listCustomerCards | API referansı}
-   */
-  listCustomerCards(args?: T.ListCustomerCardsArgs): Promise<Page<T.ListCustomerCardsItem>> {
-    return this._call('listCustomerCards', args);
-  }
-
-  /**
-   * Bir müşteri
-   *
-   * Panelin müşteri sayfasındaki her şey: iletişim, kartlar, ziyaret sayıları ve ritmi, şubeler, onaylar, segmentler. Kişi yalnız bu işletmedeki hâliyle görünür; başka işletmedeki kartları ve kayıtları hiçbir zaman.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `GET /v1/customers/{id}`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-getCustomer | API referansı}
-   */
-  getCustomer(args: T.GetCustomerArgs): Promise<T.GetCustomerData> {
-    return this._call('getCustomer', args);
-  }
-
-  /**
-   * Müşterinin geçmişi
-   *
-   * Bu işletmede olan her şey, yeniden eskiye: defter hareketleri (puan/damga/bakiye, ödül, harcama), ziyaretler, gönderilen mesajlar, verilen kartlar. `kind` ile süzülür, `passId` ile tek kart. `limit` en fazla 100.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `GET /v1/customers/{id}/timeline`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-customerTimeline | API referansı}
-   */
-  customerTimeline(args: T.CustomerTimelineArgs): Promise<Page<T.CustomerTimelineItem>> {
-    return this._call('customerTimeline', args);
-  }
-
-  /**
-   * Kart bağlantısını yeniden gönder
-   *
-   * Kartın özel bağlantısını yalnız kart sahibinin kendi e-postasına gönderir (size dönmez). Müşteri başına saatte 3. `sent: false`: adres e-posta almayı reddetmiş, geri dönmüş ya da müşterinin e-postası yok.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `POST /v1/customers/{id}/cards/{passId}/send-link`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-sendCustomerCardLink | API referansı}
-   */
-  sendCustomerCardLink(args: T.SendCustomerCardLinkArgs): Promise<T.SendCustomerCardLinkData> {
-    return this._call('sendCustomerCardLink', args);
-  }
-
-  /**
-   * Müşteriyi engelle
-   *
-   * Adresi engelli listesine ekler: bu adresle yeni kart alınamaz. `endCards: true` ile açık kartları da kapatılır (her cüzdana bir kez haber gider). Neden kayda geçer; adresin kendisi değil, özeti saklanır. Kaldırmak: `DELETE /v1/blocked-emails/{hash}`.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.manage` — Müşteri yönetimi.
-   *
-   * `POST /v1/customers/{id}/block`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-blockCustomer | API referansı}
-   */
-  blockCustomer(args: T.BlockCustomerArgs): Promise<T.BlockCustomerData> {
-    return this._call('blockCustomer', args);
-  }
-
-  /**
-   * Müşteriyi sil (KVKK)
-   *
-   * Bu işletmedeki kişi kaydını ve kişisel verisini siler, kartlarını kapatır — kişinin kendi silme isteğiyle aynı silici. **Geri alınamaz**; bu yüzden yalnız ekip oturumuyla ve oturumu açan kişinin şifresiyle (`password`) yapılır, API anahtarıyla yapılamaz. Defter ve ziyaret sayıları kişisiz kalır.
-   *
-   * **Kimlik:** ekip oturumu.
-   *
-   * **Yetki:** `customers.manage` — Müşteri yönetimi.
-   *
-   * `POST /v1/customers/{id}/erase`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-eraseCustomer | API referansı}
-   */
-  eraseCustomer(args: T.EraseCustomerArgs): Promise<void> {
-    return this._call('eraseCustomer', args);
-  }
-
-  /**
-   * Engellenen adresler
-   *
-   * Yeniden eskiye. Adresler özet ve maskeli ipucuyla görünür; bir adresin listede olup olmadığını `GET /v1/blocked-emails/check` ile sorun.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `GET /v1/blocked-emails`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-listBlockedEmails | API referansı}
-   */
-  listBlockedEmails(args?: T.ListBlockedEmailsArgs): Promise<Page<T.ListBlockedEmailsItem>> {
-    return this._call('listBlockedEmails', args);
-  }
-
-  /**
-   * Bir adresi engelle
-   *
-   * Henüz müşteri olmayan bir adres de engellenebilir. Tüm şubelerde müşteri yönetimi yetkisi gerekir. Aynı adres yeniden engellenirse neden güncellenir.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.manage` — Müşteri yönetimi.
-   *
-   * `POST /v1/blocked-emails`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-blockEmail | API referansı}
-   */
-  blockEmail(args: T.BlockEmailArgs): Promise<T.BlockEmailData> {
-    return this._call('blockEmail', args);
-  }
-
-  /**
-   * Bu adres engelli mi?
-   *
-   * Tam adresle sorulur (yalnız özetler saklandığı için arama yapılamaz).
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
-   *
-   * `GET /v1/blocked-emails/check`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-checkBlockedEmail | API referansı}
-   */
-  checkBlockedEmail(args: T.CheckBlockedEmailArgs): Promise<T.CheckBlockedEmailData> {
-    return this._call('checkBlockedEmail', args);
-  }
-
-  /**
-   * Engeli kaldır
-   *
-   * Adres yeniden kart alabilir. Tüm şubelerde müşteri yönetimi yetkisi gerekir.
-   *
-   * **Kimlik:** API anahtarı, ekip oturumu.
-   *
-   * **Yetki:** `customers.manage` — Müşteri yönetimi.
-   *
-   * `DELETE /v1/blocked-emails/{hash}`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-unblockEmail | API referansı}
-   */
-  unblockEmail(args: T.UnblockEmailArgs): Promise<void> {
-    return this._call('unblockEmail', args);
   }
 
   // ------------------------------------------------------------ Segmentler
@@ -1864,6 +2011,7 @@ export abstract class RewloyMethods {
    *
    * Kişisel verinin sistemden çıktığı an; bu yüzden **yalnız ekip oturumuyla** ve oturumu açan kişinin şifresiyle (`password`) yapılır — API anahtarıyla yapılamaz. Saatte en fazla 20; her biri kayda geçer (satır sayısı, kapsam, dönem).
    * - `kind: customers` müşteri listesi (`customers.export`), `kind: ledger` son `days` günün işlemleri (`analytics.export`, 1–366).
+   * - Müşteri listesinde e-posta ve telefon durumlarıyla ayrı sütunlardadır (ADR 168): `E-posta doğrulandı` (evet/hayır: müşteri adresi kendi koduyla doğruladı mı), `Doğrulanmış telefon` (yalnız müşterinin kendi koduyla doğruladığı numaralar), `Yazılan telefon (doğrulanmamış)` (formda, kasada ya da API ile yazılan; doğrulanmış bir numarayla aynıysa boş). Numaralar 0532 123 45 67 biçiminde.
    * - Türkçe Excel için: UTF-8 BOM, `;` ayraç, CRLF. `=`, `+`, `-`, `@` ile başlayan hücreler formül olarak çalışmasın diye `'` ile başlar.
    *
    * **Kimlik:** ekip oturumu.
@@ -2187,11 +2335,11 @@ export abstract class RewloyMethods {
   /**
    * E-ticaret bağlantıları
    *
-   * Shopify ve WooCommerce mağazaları: her sipariş (ya da tutar eşiği) müşterinin kartına damga, puan, ziyaret ya da cashback olarak işlenir. Planda `ecommerce` özelliği gerekir.
+   * Shopify ve WooCommerce mağazaları: her sipariş (ya da tutar eşiği) müşterinin kartına damga, puan, ziyaret ya da cashback olarak işlenir. Planda `ecommerce` özelliği gerekir. `shops.read` ister (ya da, geriye uyum için, `settings.read`). Kapsamı programlarla sınırlı bir kimlik yalnız o programların bağlantılarını görür; bağlantı koduyla kurulmuş bir eklentinin anahtarı yalnız kendi bağlantısını.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
-   * **Yetki:** `settings.read` — Ayarları görüntüleme.
+   * **Yetki:** `shops.read` — Mağaza bağlantılarını görüntüleme.
    *
    * `GET /v1/shops`
    *
@@ -2204,14 +2352,15 @@ export abstract class RewloyMethods {
   /**
    * Mağaza bağla
    *
-   * Bir bağlantı kartlara bakiye ekleyebildiği için API anahtarıyla aynı yetkiyi ister (`apikeys.manage`). En fazla 5 mağaza.
+   * Bağlantının programında `shops.manage` ister (ya da, geriye uyum için, `apikeys.manage`): bir bağlantı kartlara bakiye ekleyebildiği için Yönetici rolünde yoktur; "E-ticaret" rolünde vardır. En fazla 5 mağaza. WooCommerce için Rewloy eklentisini kullanıyorsanız bağlantı kodu (`POST /v1/shops/connect`) bu çağrının, sırrın ve anahtarın yerini tutar.
    * - **Shopify**: Shopify yöneticisinde Ayarlar → Bildirimler sayfasındaki imza anahtarını `shopifySecret` olarak gönderin; sonra aynı sayfada "Sipariş ödemesi" webhook'unu `webhookUrl`'e yönlendirin.
    * - **WooCommerce**: sır Rewloy'da üretilir ve yanıtta **bir kez** `secret` olarak döner; WooCommerce → Webhook'lar'da "Sipariş güncellendi" için `webhookUrl` ve bu sırla bir webhook ekleyin.
    * - `rule: amount` ise `perAmountMinor` (100 – 10.000.000 kuruş) zorunludur. Hediye kartı, kupon ve indirim kartı siparişle doldurulmaz.
+   * - Bağlantı koduyla kurulmuş bir eklentinin anahtarı yeni bağlantı kuramaz (`403 FORBIDDEN`).
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `shops.manage` — Mağaza bağlantısı yönetimi.
    *
    * `POST /v1/shops`
    *
@@ -2224,9 +2373,11 @@ export abstract class RewloyMethods {
   /**
    * Bir bağlantı
    *
+   * Bağlantının kuralı, sipariş sayıları ve sağlığı: mağazadan gelen son imzalı istek ve sonucu (`lastDelivery`), imzası tutmayan son istek (`lastRefusal`). `shops.read` ister (ya da, geriye uyum için, `settings.read`).
+   *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
-   * **Yetki:** `settings.read` — Ayarları görüntüleme.
+   * **Yetki:** `shops.read` — Mağaza bağlantılarını görüntüleme.
    *
    * `GET /v1/shops/{id}`
    *
@@ -2239,11 +2390,11 @@ export abstract class RewloyMethods {
   /**
    * Bağlantıyı aç ya da kapat
    *
-   * Kapalıyken gelen siparişler kaydedilir ama karta işlenmez (`paused`).
+   * Kapalıyken gelen siparişler kaydedilir ama karta işlenmez (`paused`). Bağlantının programında `shops.manage` ister (ya da, geriye uyum için, `apikeys.manage`): bir bağlantı kartlara bakiye ekleyebildiği için Yönetici rolünde yoktur; "E-ticaret" rolünde vardır.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `shops.manage` — Mağaza bağlantısı yönetimi.
    *
    * `PATCH /v1/shops/{id}`
    *
@@ -2256,11 +2407,11 @@ export abstract class RewloyMethods {
   /**
    * Bağlantıyı sil
    *
-   * Bundan sonra gelen siparişler reddedilir; işlenmiş olanlar kartlarda kalır.
+   * Bundan sonra gelen siparişler reddedilir; işlenmiş olanlar kartlarda kalır. Bağlantı koduyla kurulduysa eklentinin anahtarı da iptal edilir (bu çağrıyı o anahtar yaptıysa, yanıttan sonra geçersizdir). Bağlantının programında `shops.manage` ister (ya da, geriye uyum için, `apikeys.manage`): bir bağlantı kartlara bakiye ekleyebildiği için Yönetici rolünde yoktur; "E-ticaret" rolünde vardır.
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `shops.manage` — Mağaza bağlantısı yönetimi.
    *
    * `DELETE /v1/shops/{id}`
    *
@@ -2273,11 +2424,11 @@ export abstract class RewloyMethods {
   /**
    * Bağlantının siparişleri
    *
-   * Kaydedilen siparişler, yeniden eskiye; `outcome` ile süzülür. Sipariş numarası mağazanınkidir; kişisel veri tutulmaz.
+   * Kaydedilen siparişler, yeniden eskiye; `outcome` ile süzülür. Sipariş numarası mağazanınkidir; kişisel veri tutulmaz. `shops.read` ister (ya da, geriye uyum için, `settings.read`).
    *
    * **Kimlik:** API anahtarı, ekip oturumu.
    *
-   * **Yetki:** `settings.read` — Ayarları görüntüleme.
+   * **Yetki:** `shops.read` — Mağaza bağlantılarını görüntüleme.
    *
    * `GET /v1/shops/{id}/orders`
    *
@@ -2285,6 +2436,78 @@ export abstract class RewloyMethods {
    */
   listShopOrders(args: T.ListShopOrdersArgs): Promise<Page<T.ListShopOrdersItem>> {
     return this._call('listShopOrders', args);
+  }
+
+  /**
+   * Bekleyen bağlantı kodları
+   *
+   * Henüz kullanılmamış, iptal edilmemiş ve süresi dolmamış bağlantı kodları (kodun kendisi değil: o yalnız oluşturulurken bir kez görünür).
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
+   *
+   * `GET /v1/shops/connect-tokens`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listShopConnectTokens | API referansı}
+   */
+  listShopConnectTokens(args?: T.ListShopConnectTokensArgs): Promise<T.ListShopConnectTokensData> {
+    return this._call('listShopConnectTokens', args);
+  }
+
+  /**
+   * Mağaza eklentisi için bağlantı kodu al
+   *
+   * WooCommerce'teki Rewloy eklentisine yapıştırılacak **tek kullanımlık** kod. Eklenti onu `POST /v1/shops/connect` ile bir kez verir ve bir yanıtta bağlantıyı, bağlantının sırrını ve yalnız bu bağlantıya bağlı dar yetkili bir API anahtarını ("E-ticaret" rolü) alır; mağazada güçlü bir anahtar durmaz.
+   * - Kod **yalnız bu yanıtta** görünür; Rewloy yalnız özetini saklar. 15 dakika geçerlidir.
+   * - Kodu bir kişi alır (ekip oturumu; bir anahtar anahtar üretemez), `apikeys.manage`, kartın programında mağaza bağlantısı yetkisi ve — elle anahtar oluştururken olduğu gibi — `team.manage` ile (anahtarın yetkisi o kişiden verilen bir roldür; kişi E-ticaret rolünün yetkilerini tüm şubelerde taşımalıdır), `api` ve `ecommerce` özellikli bir planda. Kod bir API anahtarı ürettiği için kişinin şifresi yeniden istenir (`password`), anahtar oluştururken olduğu gibi. Bağlantı ve anahtar, kod kullanıldığı anda bu kişinin yetkileriyle kurulur: kişi o arada yetkisini kaybettiyse hiçbir şey kurulmaz.
+   * - Kural alanları `POST /v1/shops` ile aynıdır. En fazla 5 bağlantı ve aynı anda en fazla 5 bekleyen kod.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
+   *
+   * `POST /v1/shops/connect-tokens`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-createShopConnectToken | API referansı}
+   */
+  createShopConnectToken(args: T.CreateShopConnectTokenArgs): Promise<T.CreateShopConnectTokenData> {
+    return this._call('createShopConnectToken', args);
+  }
+
+  /**
+   * Bağlantı kodunu iptal et
+   *
+   * Bekleyen bir kodu hemen geçersiz kılar. Kullanılmış bir kodun kurduğu bağlantı ve anahtar bundan etkilenmez: onları `DELETE /v1/shops/{id}` kaldırır.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
+   *
+   * `DELETE /v1/shops/connect-tokens/{id}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-revokeShopConnectToken | API referansı}
+   */
+  revokeShopConnectToken(args: T.RevokeShopConnectTokenArgs): Promise<void> {
+    return this._call('revokeShopConnectToken', args);
+  }
+
+  /**
+   * Bağlantı koduyla mağazayı bağla
+   *
+   * Mağaza eklentisinin tek adımı: paneldeki bağlantı kodunu (`rwc_…`) verir, karşılığında **bir kez** şunları alır: bağlantı (`shop`), bağlantının sırrı (`secret`, WooCommerce webhook'una yazılır) ve yalnız bu bağlantıya bağlı API anahtarı (`apiKey.token`). Kimlik istemez; kod kimliktir.
+   * - Kod **tek kullanımlıktır**: ikinci kez, süresi dolmuşken ya da iptal edilmişken aynı yanıtı alır: `404 CONNECT_TOKEN_INVALID` (hangisi olduğu söylenmez). Kurulum yarıda reddedilirse (ör. 5 bağlantı sınırı) kod harcanmaz.
+   * - Anahtar "E-ticaret" rolündedir ve bağlantının programıyla sınırlıdır: kartları ve ayarları görür, yalnız kendi bağlantısını görür ve yönetir, o programdan kart verir. Bağlantı silinince anahtar da iptal edilir. Test ortamının kodu `rwk_test_` anahtarı verir (`mode`).
+   * - `shopName` anahtarın panelde görünen adına eklenir ("WooCommerce · …"). IP başına 10 dakikada 20 istek.
+   *
+   * **Kimlik:** kimlik gerekmez.
+   *
+   * `POST /v1/shops/connect`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-connectShop | API referansı}
+   */
+  connectShop(args: T.ConnectShopArgs): Promise<T.ConnectShopData> {
+    return this._call('connectShop', args);
   }
 
   // ------------------------------------------------------------ Ekip
@@ -2485,7 +2708,7 @@ export abstract class RewloyMethods {
    *
    * **Kimlik:** ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
    *
    * `GET /v1/developers/keys`
    *
@@ -2504,7 +2727,7 @@ export abstract class RewloyMethods {
    *
    * **Kimlik:** ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
    *
    * `POST /v1/developers/keys`
    *
@@ -2519,7 +2742,7 @@ export abstract class RewloyMethods {
    *
    * **Kimlik:** ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
    *
    * `GET /v1/developers/keys/{id}`
    *
@@ -2536,7 +2759,7 @@ export abstract class RewloyMethods {
    *
    * **Kimlik:** ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
    *
    * `DELETE /v1/developers/keys/{id}`
    *
@@ -2553,7 +2776,7 @@ export abstract class RewloyMethods {
    *
    * **Kimlik:** ekip oturumu.
    *
-   * **Yetki:** `apikeys.manage` — API anahtarı ve mağaza bağlantısı yönetimi.
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
    *
    * `GET /v1/developers/keys/{id}/requests`
    *
@@ -2674,6 +2897,80 @@ export abstract class RewloyMethods {
    */
   testWebhook(args: T.TestWebhookArgs): Promise<T.TestWebhookData> {
     return this._call('testWebhook', args);
+  }
+
+  /**
+   * Test ortamı
+   *
+   * İşletmenin test ortamı açık mı, hangisi, bu kişinin orada koltuğu var mı ve sınırlara göre ne kadar dolu. Gerçek işletmeden de test ortamının kendisinden de çağrılır.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
+   *
+   * `GET /v1/test/environment`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-getTestEnvironment | API referansı}
+   */
+  getTestEnvironment(args?: T.GetTestEnvironmentArgs): Promise<T.GetTestEnvironmentData> {
+    return this._call('getTestEnvironment', args);
+  }
+
+  /**
+   * Test ortamını aç
+   *
+   * İşletmenin test ortamını açar: gerçek işletmeye bağlı ayrı bir işletme, adı " · Test" ile biter. Buradaki hiçbir şey müşterilere ulaşmaz: e-posta, bildirim, SMS ya da WhatsApp gönderilmez, hiçbir cüzdana kart eklenmez; gönderilecek olan "Gönderilmeyenler"e yazılır (`GET /v1/test/messages`). Webhook'lar teslim edilir.
+   * - Gerçek işletmenin sahipleri ve API anahtarı yöneten koltukları test ortamında aynı rolle koltuk alır. Test ortamının anahtarları `rwk_test_` ile başlar; oluşturmak için `Rewloy-Merchant` başlığında test ortamını seçip `POST /v1/developers/keys` çağırın.
+   * - Planı gerçek işletmenin planıdır; ücretlendirilmez. En fazla 1.000 müşteri ve 1.000 kart tutar.
+   * - Test ortamına gerçek müşteri verisi girmeyin.
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
+   *
+   * `POST /v1/test/environment`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-openTestEnvironment | API referansı}
+   */
+  openTestEnvironment(args?: T.OpenTestEnvironmentArgs): Promise<T.OpenTestEnvironmentData> {
+    return this._call('openTestEnvironment', args);
+  }
+
+  /**
+   * Test ortamını sıfırla
+   *
+   * Test ortamı kapanır ve yerine yenisi açılır: eski ortamın anahtarları hemen geçersiz olur, webhook'ları kapanır, koltukları askıya alınır; müşterileri, kartları ve "Gönderilmeyenler"i beklemeden ve geri dönülmez biçimde silinir. Yeni ortam için yeni anahtar oluşturun. Açık bir test ortamı yoksa yalnız yenisi açılır. Bir işletme günde en fazla 5 kez sıfırlar (`429 RATE_LIMITED`).
+   *
+   * **Kimlik:** ekip oturumu.
+   *
+   * **Yetki:** `apikeys.manage` — API anahtarı yönetimi.
+   *
+   * `POST /v1/test/environment/reset`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-resetTestEnvironment | API referansı}
+   */
+  resetTestEnvironment(args?: T.ResetTestEnvironmentArgs): Promise<T.ResetTestEnvironmentData> {
+    return this._call('resetTestEnvironment', args);
+  }
+
+  /**
+   * Gönderilmeyenler
+   *
+   * Test ortamının göndermediği mesajlar, yeniden eskiye: e-postalar (konusu ve metniyle), Rewloy Cüzdan bildirimleri, kampanya ve otomasyonların kartlara giden mesajları ve "ödülünüz hazır" anları. Alıcı maskelidir.
+   * - Yalnız test ortamının kimliğiyle çağrılır (`rwk_test_` anahtarı ya da test ortamını seçen ekip oturumu); gerçek işletmenin kimliği `403 TEST_ENV_ONLY` alır. Mesajlar müşterilere yazıldığı için `customers.read` yetkisi ister.
+   * - Kart bağlantılarındaki görüntüleme anahtarı saklanmaz: bağlantı `?k=…` olarak görünür.
+   * - Test ortamı başına son 500 mesaj, 30 gün tutulur.
+   *
+   * **Kimlik:** API anahtarı, ekip oturumu.
+   *
+   * **Yetki:** `customers.read` — Müşterileri görüntüleme.
+   *
+   * `GET /v1/test/messages`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-listTestMessages | API referansı}
+   */
+  listTestMessages(args?: T.ListTestMessagesArgs): Promise<Page<T.ListTestMessagesItem>> {
+    return this._call('listTestMessages', args);
   }
 
   // ------------------------------------------------------------ Bildirimler ve destek
@@ -2846,83 +3143,6 @@ export abstract class RewloyMethods {
    */
   reportBug(args: T.ReportBugArgs): Promise<T.ReportBugData> {
     return this._call('reportBug', args);
-  }
-
-  // ------------------------------------------------------------ Katılım
-
-  /**
-   * Katılım formu
-   *
-   * Bir programın katılım formunu kendi uygulamanızda çizmek için: işletme ve program adı, türü, e-postadan başka sorulan alanlar (zorunlu mu), renkler ve görseller. Kimlik istemez.
-   *
-   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
-   *
-   * `GET /v1/public/programs/{id}`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-publicProgram | API referansı}
-   */
-  publicProgram(args: T.PublicProgramArgs): Promise<T.PublicProgramData> {
-    return this._call('publicProgram', args);
-  }
-
-  /**
-   * Programa katıl
-   *
-   * Kişi kendi kartını alır; kartın bağlantısı e-postasına da gider (sekme kapansa da kart kaybolmaz). Aynı e-postanın bu programda zaten kartı varsa yeni kart verilmez, mevcut kartın bağlantısı **yalnız kişinin e-postasına** gider (`created: false`). Formun zorunlu alanları `GET /v1/public/programs/{id}` ile öğrenilir. IP başına 10 dakikada 30.
-   *
-   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
-   *
-   * `POST /v1/public/programs/{id}/join`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-joinProgram | API referansı}
-   */
-  joinProgram(args: T.JoinProgramArgs): Promise<T.JoinProgramData> {
-    return this._call('joinProgram', args);
-  }
-
-  /**
-   * Bir kod
-   *
-   * Hediye kartı, kupon ya da indirim kodunun ne verdiği ve hâlâ alınıp alınamayacağı. Kimlik istemez; yalnız kodu bilen birinin öğrenebileceği kadarını söyler.
-   *
-   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
-   *
-   * `GET /v1/public/codes/{code}`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-publicCode | API referansı}
-   */
-  publicCode(args: T.PublicCodeArgs): Promise<T.PublicCodeData> {
-    return this._call('publicCode', args);
-  }
-
-  /**
-   * Kodu kullan, kartı al
-   *
-   * Kişi koddan kartını alır. Kişi başına sınır dolduysa `ALREADY_CLAIMED` döner ve mevcut kartın bağlantısı **yalnız kişinin e-postasına** gider. IP başına 10 dakikada 30.
-   *
-   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
-   *
-   * `POST /v1/public/codes/{code}/claim`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-claimCode | API referansı}
-   */
-  claimCode(args: T.ClaimCodeArgs): Promise<T.ClaimCodeData> {
-    return this._call('claimCode', args);
-  }
-
-  /**
-   * Kart bağlantımı e-postama gönder
-   *
-   * Kart yazılan adrese kayıtlıysa bağlantısı o adrese gider. Yanıt her durumda aynıdır (kartın kime ait olduğu sızmaz). IP başına saatte 10, kart başına saatte 3.
-   *
-   * **Kimlik:** kimlik gerekmez, kart sahibi oturumu, ekip oturumu, API anahtarı.
-   *
-   * `POST /v1/public/cards/{serial}/email-link`
-   *
-   * @see {@link https://rewloy.com/gelistiriciler/api#op-emailCardLink | API referansı}
-   */
-  emailCardLink(args: T.EmailCardLinkArgs): Promise<T.EmailCardLinkData> {
-    return this._call('emailCardLink', args);
   }
 
   // ------------------------------------------------------------ Kart sahibi
@@ -3248,7 +3468,7 @@ export abstract class RewloyMethods {
   /**
    * Cüzdan hesabım
    *
-   * Rewloy Cüzdan hesabının giriş yolları: doğrulanmış e-postalar, doğrulanmış telefon numaraları (`phones`; telefonla giriş açıkken ya da hesapta numara durdukça), passkey'ler (parmak izi / yüz tanıma) ve Google ya da Apple girişleri (`identities`); oturum açık cihaz sayısı. Kartları işletmeler arasında birleştiren, doğrulanmış e-postalar ve numaralardır; bir numara yalnız bu hesabın onu ilk doğruladığı andan sonra doğrulanmış kayıtlara ulaşır (numaralar el değiştirir). Son giriş yolu kaldırılamaz (`LAST_WAY_IN`).
+   * Rewloy Cüzdan hesabının giriş yolları: doğrulanmış e-postalar, doğrulanmış telefon numaraları (`phones`; telefonla giriş açıkken ya da hesapta numara durdukça), passkey'ler (parmak izi / yüz tanıma) ve Google ya da Apple girişleri (`identities`); oturum açık cihaz sayısı. Kartları işletmeler arasında birleştiren, doğrulanmış e-postalar ve numaralardır; bir numara yalnız bu hesabın onu ilk doğruladığı andan sonra doğrulanmış kayıtlara ulaşır (numaralar el değiştirir). Son giriş yolu kaldırılamaz (`LAST_WAY_IN`); hesabın en az 72 saatlik bir yolu, kalanların hepsi daha yeniyken kaldırılamaz (`WAY_IN_TOO_NEW`).
    *
    * **Kimlik:** kart sahibi oturumu.
    *
@@ -3419,6 +3639,60 @@ export abstract class RewloyMethods {
    */
   removeHolderEmail(args: T.RemoveHolderEmailArgs): Promise<void> {
     return this._call('removeHolderEmail', args);
+  }
+
+  /**
+   * E-postayı ya da numarayı değiştir: kod gönder
+   *
+   * Hesabın bir e-postasının ya da numarasının (`GET /v1/holder/account` listesindeki kimliği) yerine yenisi (ADR 170): adrese `email`, numaraya `phone` (aynı türden). Yeniye 6 haneli bir kod gider; kodu bu yanıttaki `request` ile `POST /v1/holder/identities/{id}/replace/verify` gönderin.
+   * - Uygulamanın oturumu cihazın kanıtıdır (web'deki cihaz anahtarının yerine).
+   * - Yeni adres ya da numara eskisiyle aynıysa ya da zaten bu hesabınsa `409 IDENT_SAME`. Numara için telefonla giriş açık değilse `501 NOT_ENABLED`; `channel` ve sınırlar `POST /v1/holder/identities/phone` gibidir. Hesap başına saatte 10 (ekleme ve değiştirme birlikte).
+   *
+   * **Kimlik:** kart sahibi oturumu.
+   *
+   * `POST /v1/holder/identities/{id}/replace`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-replaceHolderIdentity | API referansı}
+   */
+  replaceHolderIdentity(args: T.ReplaceHolderIdentityArgs): Promise<T.ReplaceHolderIdentityData> {
+    return this._call('replaceHolderIdentity', args);
+  }
+
+  /**
+   * E-postayı ya da numarayı değiştir: kodu doğrula
+   *
+   * Değiştirme adımının `request` değeri ve yeniye gelen kod (ADR 170, PHONE.md §12.1).
+   * - Hesaba girmenin en az 72 saattir (`recovery.wait_hours`) hesapta olan başka bir yolu varsa (bir e-posta, bir numara, passkey, Google ya da Apple; yeni eklenen ya da bir birleştirmeyle gelen sayılmaz, ADR 172) yenisi eskisinin yerini hemen alır (`applied`): işletmelerdeki kayıtlar yeniye geçer, hesabın öteki adreslerine e-posta, öteki cihazlarına bildirim gider.
+   * - Yoksa değişiklik bekler (`pending`, `change.dueAt`; ayar `recovery.wait_hours`, 72 saat): o zamana kadar eskisiyle girilir, yenisiyle girilmez. Eski adrese iptal bağlantılı bir e-posta, öteki cihazlara bildirim gider; SMS ya da WhatsApp gitmez.
+   * - Yeni adres ya da numara başka bir Rewloy Cüzdan hesabındaysa `409 MERGE_REQUIRED` (`details.request`): kişiye sorun, yanıtı `POST /v1/holder/merge` ile gönderin; birleşince değişiklik yapılır. Eski giriş yolu, birleşmeden önce bu hesaba girmenin tek yoluysa değişiklik yine bekler (öteki hesabın giriş yolları sayılmaz).
+   * - Yanlış kodda `CODE_INVALID`. Eski giriş yolu artık hesapta değilse `404 NOT_FOUND`.
+   *
+   * **Kimlik:** kart sahibi oturumu.
+   *
+   * `POST /v1/holder/identities/{id}/replace/verify`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-verifyHolderIdentityReplace | API referansı}
+   */
+  verifyHolderIdentityReplace(args: T.VerifyHolderIdentityReplaceArgs): Promise<T.VerifyHolderIdentityReplaceData> {
+    return this._call('verifyHolderIdentityReplace', args);
+  }
+
+  /**
+   * Bekleyen değişikliği iptal et ("Bu değişikliği ben yapmadım")
+   *
+   * Hesabın bekleyen giriş yolu değişikliğini (`GET /v1/holder/account` `pendingChange.id`) ya da onaylanmış ve bekleyen bir kurtarma talebini (`pendingRecovery.id`) iptal eder (ADR 170).
+   * - Değişikliği bu cihaz istediyse kişinin vazgeçmesidir. Başka bir cihaz iptal ederse "Bu değişikliği ben yapmadım" demektir: değişikliği isteyen cihazın oturumu kapanır ve hesap işaretlenir (kurtarma talepleri artık kendiliğinden onaylanmaz).
+   * - Kurtarma talebi iptal edilirse hesap olduğu gibi kalır ve işaretlenir.
+   * - Bekleyen bir şey yoksa (uygulandı, iptal edildi) `404 NOT_FOUND`.
+   *
+   * **Kimlik:** kart sahibi oturumu.
+   *
+   * `DELETE /v1/holder/changes/{id}`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-cancelHolderChange | API referansı}
+   */
+  cancelHolderChange(args: T.CancelHolderChangeArgs): Promise<void> {
+    return this._call('cancelHolderChange', args);
   }
 
   /**
@@ -3731,5 +4005,58 @@ export abstract class RewloyMethods {
    */
   testHolderDevicePush(args?: T.TestHolderDevicePushArgs): Promise<T.TestHolderDevicePushData> {
     return this._call('testHolderDevicePush', args);
+  }
+
+  // ------------------------------------------------------------ Kimlik
+
+  /**
+   * Hesap kurtarma talebi: yeniye kod gönder
+   *
+   * Rewloy Cüzdan'a giremeyen kişi ("Numaram / e-postam değişti, giremiyorum"): eski adresi ya da numarası (`old`) ve yenisi (`new`), aynı türden (`kind`). Yeniye 6 haneli bir kod gider; kodu bu yanıttaki `request` ile `POST /v1/holder/recovery/verify` gönderin. Kod yazılmadan hiçbir şey kaydedilmez.
+   * - İsteğe bağlı olarak yalnız hesabın sahibinin bilebileceği bilgiler talebi güçlendirir: kart numaraları (`cards`, en çok 5), kartların olduğu işletmeler (`businesses`, en çok 5), kartın son kullanıldığı zaman (`lastVisit`).
+   * - `previousToken`: bu kurulumun daha önceki `rwh_` oturumu (süresi dolmuş olsa da): kurulumun hesaba yeni olmadığını söyler.
+   * - Yanıt eski adresin ya da numaranın kayıtlı olup olmadığını **söylemez**. Sınırlar: IP başına saatte 5 talep, aynı eski adres ya da numara için günde 5; kod sınırları `POST /v1/holder/login` gibidir. Telefonla giriş açık değilse numara `501 NOT_ENABLED`.
+   *
+   * **Kimlik:** kimlik gerekmez.
+   *
+   * `POST /v1/holder/recovery`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-startHolderRecovery | API referansı}
+   */
+  startHolderRecovery(args: T.StartHolderRecoveryArgs): Promise<T.StartHolderRecoveryData> {
+    return this._call('startHolderRecovery', args);
+  }
+
+  /**
+   * Hesap kurtarma talebi: kodu doğrula, talebi kaydet
+   *
+   * Talep adımının `request` değeri ve yeniye gelen kod. Doğru kodda talep kaydedilir ve değerlendirilir; yanıt talebin durumu (`recovery`) ve onu bir daha okumanın anahtarı (`token`, **bir kez** verilir: saklayın).
+   * - Kişiye her durumda önce "Talebiniz alındı" deyin; sonra `recovery.state`: `review` (ekibimiz inceliyor), `refused` (destek ekibine `recovery.supportUrl` ile yazmasını söyleyin), `pending_wait` / `approved` (`dueAt` anında uygulanır), `applied`.
+   * - Numaraya sonuç SMS ya da WhatsApp ile bildirilmez: uygulama durumu `POST /v1/holder/recovery/status` ile okur. Talep uygulanınca kişi yeni adresiyle ya da numarasıyla `POST /v1/holder/login` ile girer.
+   * - Yanlış kodda `CODE_INVALID`. IP başına 15 dakikada 30 deneme.
+   *
+   * **Kimlik:** kimlik gerekmez.
+   *
+   * `POST /v1/holder/recovery/verify`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-verifyHolderRecovery | API referansı}
+   */
+  verifyHolderRecovery(args: T.VerifyHolderRecoveryArgs): Promise<T.VerifyHolderRecoveryData> {
+    return this._call('verifyHolderRecovery', args);
+  }
+
+  /**
+   * Hesap kurtarma talebinin durumu
+   *
+   * Uygulamadan açılmış bir talebin durumu, `POST /v1/holder/recovery/verify` yanıtındaki `token` ile (gövdede: adreste değil). Bilinmeyen bir anahtar `404 NOT_FOUND`. Web'den açılmış bir talep yalnız onu açan tarayıcıda okunur. IP başına 15 dakikada 120.
+   *
+   * **Kimlik:** kimlik gerekmez.
+   *
+   * `POST /v1/holder/recovery/status`
+   *
+   * @see {@link https://rewloy.com/gelistiriciler/api#op-holderRecoveryStatus | API referansı}
+   */
+  holderRecoveryStatus(args: T.HolderRecoveryStatusArgs): Promise<T.HolderRecoveryStatusData> {
+    return this._call('holderRecoveryStatus', args);
   }
 }

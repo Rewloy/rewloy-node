@@ -88,12 +88,12 @@ describe('retries', () => {
     }
   });
 
-  it('never retries a POST without an Idempotency-Key, nor a PATCH', async () => {
+  it('never retries a POST without an Idempotency-Key (createSegment takes none), nor a PATCH', async () => {
     const s = await stub((_req, res) => json(res, 503, apiError('INTERNAL', 503, 'busy')));
     const { sleeps, sleep } = recordingSleep();
     try {
       const c = new Rewloy({ apiKey: KEY, baseUrl: s.url, sleep });
-      await assert.rejects(c.issuePass({ body: { programId: LOCATION } }), (err: unknown) => err instanceof RewloyError && err.status === 503);
+      await assert.rejects(c.createSegment({ body: { name: 'Sabit müşteriler', rule: { minVisits: 3 } } }), (err: unknown) => err instanceof RewloyError && err.status === 503);
       assert.equal(s.requests.length, 1);
       await assert.rejects(c.updateProgram({ params: { id: LOCATION }, body: {} }));
       assert.equal(s.requests.length, 2);
@@ -164,7 +164,7 @@ describe('retries', () => {
       const c = new Rewloy({ apiKey: KEY, baseUrl: s.url, sleep });
       assert.deepEqual(await c.getPass({ params: { serial: SERIAL } }), { ok: true });
       assert.equal(sleeps.length, 1);
-      await assert.rejects(c.issuePass({ body: { programId: LOCATION } }), (err: unknown) => err instanceof RewloyConnectionError && err.status === 0 && err.code === 'CONNECTION_ERROR');
+      await assert.rejects(c.createSegment({ body: { name: 'Sabit müşteriler', rule: { minVisits: 3 } } }), (err: unknown) => err instanceof RewloyConnectionError && err.status === 0 && err.code === 'CONNECTION_ERROR');
       assert.equal(s.requests.length, 3);
     } finally {
       await s.close();

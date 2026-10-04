@@ -22,6 +22,7 @@ export type ErrorCode =
   | 'CROSS_SITE'
   | 'UNAUTHENTICATED'
   | 'INVALID_API_KEY'
+  | 'KEY_MODE_MISMATCH'
   | 'TOKEN_INVALID'
   | 'FLOW_EXPIRED'
   | 'PASSKEY_REFUSED'
@@ -29,6 +30,8 @@ export type ErrorCode =
   | 'CODE_LOCKED'
   | 'PHONE_BUSY'
   | 'LAST_WAY_IN'
+  | 'CHANGE_PENDING'
+  | 'WAY_IN_TOO_NEW'
   | 'NOT_ENABLED'
   | 'PUSH_ENDPOINT_REFUSED'
   | 'PUSH_DEVICE_REFUSED'
@@ -41,6 +44,7 @@ export type ErrorCode =
   | 'DEVICE_PROOF'
   | 'DEVICE_KEY_REFUSED'
   | 'MERGE_REQUIRED'
+  | 'IDENT_SAME'
   | 'LOGIN_FAILED'
   | 'MFA_REQUIRED'
   | 'MFA_INVALID'
@@ -79,6 +83,9 @@ export type ErrorCode =
   | 'KEY_NOT_FOUND'
   | 'WEBHOOK_NOT_FOUND'
   | 'SHOP_NOT_FOUND'
+  | 'SHOP_PROGRAM_MISMATCH'
+  | 'CONNECT_TOKEN_INVALID'
+  | 'CONNECT_TOKEN_NOT_FOUND'
   | 'TICKET_NOT_FOUND'
   | 'NOTIFICATION_NOT_FOUND'
   | 'EXPORT_NOT_FOUND'
@@ -119,6 +126,8 @@ export type ErrorCode =
   | 'INVALID_BIRTHDAY'
   | 'INVALID_PHONE'
   | 'EMAIL_BLOCKED'
+  | 'PHONE_BLOCKED'
+  | 'CUSTOMER_BLOCKED'
   | 'NO_EMAIL'
   | 'INVALID_SEGMENT'
   | 'CAMPAIGN_REFUSED'
@@ -134,6 +143,12 @@ export type ErrorCode =
   | 'ACCOUNT_EXISTS'
   | 'TICKET_CLOSED'
   | 'SELF_CHANGE'
+  | 'TEST_MODE_MISMATCH'
+  | 'TEST_ENV_ONLY'
+  | 'TEST_ENV_NESTED'
+  | 'TEST_ENV_NO_INVITE'
+  | 'TEST_LIMIT_REACHED'
+  | 'TEST_CARD_NO_WALLET'
   | 'INVALID_KEY'
   | 'BAD_WEBHOOK_URL'
   | 'ALREADY_CLOSED'
@@ -143,6 +158,7 @@ export type ErrorCode =
   | 'INTELLIGENCE_DISABLED'
   | 'PEOPLE_DISABLED'
   | 'DUPLICATE'
+  | 'RECOVERY_DECIDED'
   | 'SECRET_NOT_ALLOWED';
 
 /** The body of an error answer. `C` narrows `error.code` to the codes a status can carry. */
@@ -165,6 +181,461 @@ export interface PageMeta {
   page: number;
   pageSize: number;
   total: number;
+}
+
+// ----------------------------------------------------------------------
+// issuePass · POST /v1/passes
+
+/** Header parameters of `issuePass`, as sent on the wire. */
+export interface IssuePassHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key'?: string;
+}
+
+/** Request body of `issuePass`. */
+export interface IssuePassBody {
+  programId: string;
+  email?: string;
+  name?: string;
+  homeLocationId?: string;
+  /** Hediye kartı tutarı, kuruş */
+  faceMinor?: number;
+  kvkkConsent?: boolean;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  /** YYYY-AA-GG */
+  birthday?: string;
+  /** Kartı kazandıran siparişin mağazadaki numarası (webhook'taki `id`). `shopId` ve `email` ile birlikte. */
+  orderId?: string;
+  /** Siparişin geldiği mağaza bağlantısı (`GET /v1/shops`). `orderId` ile birlikte. */
+  shopId?: string;
+}
+
+/** The `data` of `issuePass`'s answer. */
+export interface IssuePassData {
+  serial: string;
+  cardUrl: string;
+  /** Yalnız `orderId` gönderildiyse: siparişin bu karta ne olduğu. */
+  order?: {
+    shopId: string;
+    orderId: string;
+    /** waiting: sipariş mağazadan henüz gelmedi; geldiğinde (ödenmişse) e-postasıyla bu kartı bulur ve işlenir · resend: sipariş karttan önce geldi ve "Kartı yok" diye kaydedildi; yeniden açıldı: mağaza siparişi 7 gün içinde yeniden gönderirse (imzalı) bu karta işlenir · recorded: sipariş daha önce başka bir sonuçla kaydedilmişti ve değişmedi (`outcome`) */
+    result: 'waiting' | 'resend' | 'recorded';
+    /** Siparişin şimdiki kaydı (`GET /v1/shops/{id}/orders` ile aynı); `waiting` iken null. */
+    outcome: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | null;
+  };
+}
+
+/** Arguments of `issuePass`. */
+export interface IssuePassArgs extends RequestOptions {
+  /** The JSON body. */
+  body: IssuePassBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// getPass · GET /v1/passes/{serial}
+
+/** Path parameters of `getPass`. */
+export interface GetPassParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Header parameters of `getPass`, as sent on the wire. */
+export interface GetPassHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `getPass`'s answer. */
+export interface GetPassData {
+  serial: string;
+  programId: string;
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  status: string;
+  /** Damga, puan, ziyaret ya da kuruş (türüne göre). */
+  balance: number | null;
+  progressLabel?: string | null;
+  progressValue?: string | null;
+  rewardReady: boolean;
+  rewardsReady: number;
+  tier?: string | null;
+  /** VIP: bir sonraki seviye ve kalan ziyaret. */
+  nextTier?: unknown;
+  /** Puan: bir sonraki ödül ve kalan puan. */
+  nextReward?: unknown;
+  updatedAt: string;
+}
+
+/** Arguments of `getPass`. */
+export interface GetPassArgs extends RequestOptions {
+  /** Path parameters. */
+  params: GetPassParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// getPassTill · GET /v1/passes/{serial}/till
+
+/** Path parameters of `getPassTill`. */
+export interface GetPassTillParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Query parameters of `getPassTill`. */
+export interface GetPassTillQuery {
+  locationId: string;
+}
+
+/** Header parameters of `getPassTill`, as sent on the wire. */
+export interface GetPassTillHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `getPassTill`'s answer. */
+export interface GetPassTillData {
+  allowed: boolean;
+  /** Kartın geçerli olduğu şubeler; null = hepsi */
+  branches: string[] | null;
+  promotion: {
+    id: string;
+    name: string;
+    factor: number;
+    staffNote: string;
+    endsAt: string;
+  } | null;
+  notices: {
+    tone: 'block' | 'promo' | 'info';
+    text: string;
+    note?: string;
+  }[];
+}
+
+/** Arguments of `getPassTill`. */
+export interface GetPassTillArgs extends RequestOptions {
+  /** Path parameters. */
+  params: GetPassTillParams;
+  /** Query parameters. */
+  query: GetPassTillQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// passAction · POST /v1/passes/{serial}/actions
+
+/** Path parameters of `passAction`. */
+export interface PassActionParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Header parameters of `passAction`, as sent on the wire. */
+export interface PassActionHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key': string;
+}
+
+/** Request body of `passAction`. */
+export interface PassActionBody {
+  action: 'earn-stamps' | 'redeem-stamps' | 'earn-points' | 'redeem-reward' | 'visit' | 'spend' | 'accrue' | 'use' | 'load' | 'spend-points';
+  locationId: string;
+  count?: number;
+  points?: number;
+  amountMinor?: number;
+  rewardIndex?: number;
+}
+
+/** The `data` of `passAction`'s answer. */
+export interface PassActionData {
+  balance: number;
+  duplicate: boolean;
+  /** Damga: ödül hazır oldu · puan: karşılanabilen en yüksek ödül · VIP: seviye */
+  detail?: string;
+  /** Bu kazanımı katlayan kasa kampanyası (ADR 139) */
+  promotion?: {
+    id: string;
+    name: string;
+    factor: number;
+  };
+}
+
+/** Arguments of `passAction`. */
+export interface PassActionArgs extends RequestOptions {
+  /** Path parameters. */
+  params: PassActionParams;
+  /** The JSON body. */
+  body: PassActionBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// publicProgram · GET /v1/public/programs/{id}
+
+/** Path parameters of `publicProgram`. */
+export interface PublicProgramParams {
+  id: string;
+}
+
+/** Header parameters of `publicProgram`, as sent on the wire. */
+export interface PublicProgramHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `publicProgram`'s answer. */
+export interface PublicProgramData {
+  programId: string;
+  businessName: string;
+  programName: string;
+  type: string;
+  fields: {
+    id: 'firstName' | 'lastName' | 'phone' | 'birthday';
+    required: boolean;
+  }[];
+  colors: {
+    background: string;
+    foreground: string;
+    label: string;
+    accent: string;
+  };
+  logoUrl: string;
+  bannerUrl: string | null;
+  joinUrl: string;
+  privacyUrl: string;
+}
+
+/** Arguments of `publicProgram`. */
+export interface PublicProgramArgs extends RequestOptions {
+  /** Path parameters. */
+  params: PublicProgramParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// joinProgram · POST /v1/public/programs/{id}/join
+
+/** Path parameters of `joinProgram`. */
+export interface JoinProgramParams {
+  id: string;
+}
+
+/** Header parameters of `joinProgram`, as sent on the wire. */
+export interface JoinProgramHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `joinProgram`. */
+export interface JoinProgramBody {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  /** YYYY-AA-GG */
+  birthday?: string;
+  /** Kişiye işletmenin aydınlatma metni sunuldu (işletmenin beyanı; doğruluğundan işletme sorumludur). Bunu bir rıza kutusu olarak sormayın. */
+  kvkkConsent: true;
+}
+
+/** The `data` of `joinProgram`'s answer. */
+export interface JoinProgramData {
+  /** false: bu e-postanın bu programda zaten kartı var; bağlantısı kişinin e-postasına gönderildi */
+  created: boolean;
+  serial: string | null;
+  /** Kartın özel bağlantısı — yalnız yeni kartta; yalnız kişiye gösterin */
+  cardUrl: string | null;
+}
+
+/** Arguments of `joinProgram`. */
+export interface JoinProgramArgs extends RequestOptions {
+  /** Path parameters. */
+  params: JoinProgramParams;
+  /** The JSON body. */
+  body: JoinProgramBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// publicCode · GET /v1/public/codes/{code}
+
+/** Path parameters of `publicCode`. */
+export interface PublicCodeParams {
+  code: string;
+}
+
+/** Header parameters of `publicCode`, as sent on the wire. */
+export interface PublicCodeHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `publicCode`'s answer. */
+export interface PublicCodeData {
+  code: string;
+  name: string;
+  type: 'giftcard' | 'voucher' | 'discount';
+  businessName: string;
+  valueMinor: number | null;
+  currency: string | null;
+  offerText: string | null;
+  percent: number | null;
+  usage: 'once' | 'limited' | 'unlimited';
+  usageLimit: number | null;
+  validUntil: string | null;
+  fields: {
+    id: 'firstName' | 'lastName' | 'phone' | 'birthday';
+    required: boolean;
+  }[];
+  claimable: boolean;
+  /** Alınamıyorsa neden */
+  reason: 'closed' | 'full' | 'expired' | null;
+}
+
+/** Arguments of `publicCode`. */
+export interface PublicCodeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: PublicCodeParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// claimCode · POST /v1/public/codes/{code}/claim
+
+/** Path parameters of `claimCode`. */
+export interface ClaimCodeParams {
+  code: string;
+}
+
+/** Header parameters of `claimCode`, as sent on the wire. */
+export interface ClaimCodeHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `claimCode`. */
+export interface ClaimCodeBody {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  /** YYYY-AA-GG */
+  birthday?: string;
+  /** Kişiye işletmenin aydınlatma metni sunuldu (işletmenin beyanı; doğruluğundan işletme sorumludur). Bunu bir rıza kutusu olarak sormayın. */
+  kvkkConsent: true;
+}
+
+/** The `data` of `claimCode`'s answer. */
+export interface ClaimCodeData {
+  serial: string;
+  cardUrl: string;
+}
+
+/** Arguments of `claimCode`. */
+export interface ClaimCodeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ClaimCodeParams;
+  /** The JSON body. */
+  body: ClaimCodeBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// emailCardLink · POST /v1/public/cards/{serial}/email-link
+
+/** Path parameters of `emailCardLink`. */
+export interface EmailCardLinkParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Header parameters of `emailCardLink`, as sent on the wire. */
+export interface EmailCardLinkHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `emailCardLink`. */
+export interface EmailCardLinkBody {
+  email: string;
+}
+
+/** The `data` of `emailCardLink`'s answer. */
+export interface EmailCardLinkData {
+  accepted: true;
+}
+
+/** Arguments of `emailCardLink`. */
+export interface EmailCardLinkArgs extends RequestOptions {
+  /** Path parameters. */
+  params: EmailCardLinkParams;
+  /** The JSON body. */
+  body: EmailCardLinkBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -200,6 +671,10 @@ export interface LoginData {
     requires2fa: boolean;
     /** Bu işletmede herhangi bir şubede taşınan yetkiler (menü göstermek için; asıl kontrol her istekte yapılır). */
     permissions: string[];
+    /** `test`: bir test ortamı (ADR 173). Buna `Rewloy-Merchant` başlığıyla açıkça seçerek ulaşılır; başlıksız istek onu seçmez. */
+    mode: 'live' | 'test';
+    /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
+    testOf: string | null;
   }[];
 }
 
@@ -289,8 +764,13 @@ export type MeData = {
     requires2fa: boolean;
     /** Bu işletmede herhangi bir şubede taşınan yetkiler (menü göstermek için; asıl kontrol her istekte yapılır). */
     permissions: string[];
+    /** `test`: bir test ortamı (ADR 173). Buna `Rewloy-Merchant` başlığıyla açıkça seçerek ulaşılır; başlıksız istek onu seçmez. */
+    mode: 'live' | 'test';
+    /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
+    testOf: string | null;
   }[];
   activeMerchantId: string | null;
+  mode: 'live' | 'test' | null;
 } | {
   kind: 'key';
   key: {
@@ -301,12 +781,15 @@ export type MeData = {
     scope: string;
     expiresAt: string | null;
     rateLimitPerMinute: number;
+    /** Bağlantı koduyla kurulmuş bir mağaza eklentisinin anahtarıysa ait olduğu mağaza bağlantısı (yalnız onu görür ve yönetir); değilse null. */
+    shopId: string | null;
   };
   business: {
     id: string;
     name: string;
   };
   permissions: string[];
+  mode: 'live' | 'test';
 };
 
 /** Arguments of `me`. */
@@ -562,6 +1045,10 @@ export interface SignupData {
     requires2fa: boolean;
     /** Bu işletmede herhangi bir şubede taşınan yetkiler (menü göstermek için; asıl kontrol her istekte yapılır). */
     permissions: string[];
+    /** `test`: bir test ortamı (ADR 173). Buna `Rewloy-Merchant` başlığıyla açıkça seçerek ulaşılır; başlıksız istek onu seçmez. */
+    mode: 'live' | 'test';
+    /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
+    testOf: string | null;
   }[];
   merchantId: string;
   termsVersion: string;
@@ -709,6 +1196,10 @@ export interface AcceptInviteData {
     requires2fa: boolean;
     /** Bu işletmede herhangi bir şubede taşınan yetkiler (menü göstermek için; asıl kontrol her istekte yapılır). */
     permissions: string[];
+    /** `test`: bir test ortamı (ADR 173). Buna `Rewloy-Merchant` başlığıyla açıkça seçerek ulaşılır; başlıksız istek onu seçmez. */
+    mode: 'live' | 'test';
+    /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
+    testOf: string | null;
   }[];
 }
 
@@ -1159,210 +1650,6 @@ export interface SetTeam2faData {
 export interface SetTeam2faArgs extends RequestOptions {
   /** The JSON body. */
   body: SetTeam2faBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// issuePass · POST /v1/passes
-
-/** Header parameters of `issuePass`, as sent on the wire. */
-export interface IssuePassHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `issuePass`. */
-export interface IssuePassBody {
-  programId: string;
-  email?: string;
-  name?: string;
-  homeLocationId?: string;
-  /** Hediye kartı tutarı, kuruş */
-  faceMinor?: number;
-  kvkkConsent?: boolean;
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
-  /** YYYY-AA-GG */
-  birthday?: string;
-}
-
-/** The `data` of `issuePass`'s answer. */
-export interface IssuePassData {
-  serial: string;
-  cardUrl: string;
-}
-
-/** Arguments of `issuePass`. */
-export interface IssuePassArgs extends RequestOptions {
-  /** The JSON body. */
-  body: IssuePassBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// getPass · GET /v1/passes/{serial}
-
-/** Path parameters of `getPass`. */
-export interface GetPassParams {
-  /** Kart seri numarası, XXXX-XXXX-XXXX */
-  serial: string;
-}
-
-/** Header parameters of `getPass`, as sent on the wire. */
-export interface GetPassHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `getPass`'s answer. */
-export interface GetPassData {
-  serial: string;
-  programId: string;
-  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
-  status: string;
-  /** Damga, puan, ziyaret ya da kuruş (türüne göre). */
-  balance: number | null;
-  progressLabel?: string | null;
-  progressValue?: string | null;
-  rewardReady: boolean;
-  rewardsReady: number;
-  tier?: string | null;
-  /** VIP: bir sonraki seviye ve kalan ziyaret. */
-  nextTier?: unknown;
-  /** Puan: bir sonraki ödül ve kalan puan. */
-  nextReward?: unknown;
-  updatedAt: string;
-}
-
-/** Arguments of `getPass`. */
-export interface GetPassArgs extends RequestOptions {
-  /** Path parameters. */
-  params: GetPassParams;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// getPassTill · GET /v1/passes/{serial}/till
-
-/** Path parameters of `getPassTill`. */
-export interface GetPassTillParams {
-  /** Kart seri numarası, XXXX-XXXX-XXXX */
-  serial: string;
-}
-
-/** Query parameters of `getPassTill`. */
-export interface GetPassTillQuery {
-  locationId: string;
-}
-
-/** Header parameters of `getPassTill`, as sent on the wire. */
-export interface GetPassTillHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `getPassTill`'s answer. */
-export interface GetPassTillData {
-  allowed: boolean;
-  /** Kartın geçerli olduğu şubeler; null = hepsi */
-  branches: string[] | null;
-  promotion: {
-    id: string;
-    name: string;
-    factor: number;
-    staffNote: string;
-    endsAt: string;
-  } | null;
-  notices: {
-    tone: 'block' | 'promo' | 'info';
-    text: string;
-    note?: string;
-  }[];
-}
-
-/** Arguments of `getPassTill`. */
-export interface GetPassTillArgs extends RequestOptions {
-  /** Path parameters. */
-  params: GetPassTillParams;
-  /** Query parameters. */
-  query: GetPassTillQuery;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// passAction · POST /v1/passes/{serial}/actions
-
-/** Path parameters of `passAction`. */
-export interface PassActionParams {
-  /** Kart seri numarası, XXXX-XXXX-XXXX */
-  serial: string;
-}
-
-/** Header parameters of `passAction`, as sent on the wire. */
-export interface PassActionHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
-  'Idempotency-Key': string;
-}
-
-/** Request body of `passAction`. */
-export interface PassActionBody {
-  action: 'earn-stamps' | 'redeem-stamps' | 'earn-points' | 'redeem-reward' | 'visit' | 'spend' | 'accrue' | 'use' | 'load' | 'spend-points';
-  locationId: string;
-  count?: number;
-  points?: number;
-  amountMinor?: number;
-  rewardIndex?: number;
-}
-
-/** The `data` of `passAction`'s answer. */
-export interface PassActionData {
-  balance: number;
-  duplicate: boolean;
-  /** Damga: ödül hazır oldu · puan: karşılanabilen en yüksek ödül · VIP: seviye */
-  detail?: string;
-  /** Bu kazanımı katlayan kasa kampanyası (ADR 139) */
-  promotion?: {
-    id: string;
-    name: string;
-    factor: number;
-  };
-}
-
-/** Arguments of `passAction`. */
-export interface PassActionArgs extends RequestOptions {
-  /** Path parameters. */
-  params: PassActionParams;
-  /** The JSON body. */
-  body: PassActionBody;
-  /**
-   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
-   *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
-   */
-  idempotencyKey?: string | undefined;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -2312,6 +2599,713 @@ export interface ProgramJoinQrArgs extends RequestOptions {
 }
 
 // ----------------------------------------------------------------------
+// listCustomers · GET /v1/customers
+
+/** Query parameters of `listCustomers`. */
+export interface ListCustomersQuery {
+  /** Ad, kişinin bu işletmedeki herhangi bir adresi ya da numarası, yazılan telefon ya da kart numarası. Bir numara nasıl yazılırsa yazılsın (`0532 123 45 67`, `+90…`, bir parçası) doğrulanmış numaralarda ve yazılan telefonda aranır */
+  q?: string;
+  /** Yalnız bu programın kartı olanlar */
+  programId?: string;
+  /** active: açık kartı olan · ended: bütün kartları kapanmış */
+  status?: 'active' | 'ended';
+  /** Son N gün içinde gelen ya da hiç gelmeyen */
+  lastVisit?: '7' | '30' | '90' | 'never';
+  /** Kampanya iznine göre */
+  consent?: 'yes' | 'no';
+  blocked?: boolean;
+  sort?: 'recent' | 'new' | 'name' | 'visits' | 'cards';
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `listCustomers`, as sent on the wire. */
+export interface ListCustomersHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listCustomers`'s list. */
+export interface ListCustomersItem {
+  personId: string;
+  displayName: string;
+  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. */
+  email: string | null;
+  /** Kişinin bu işletmedeki adresleri ve numaraları, durumlarıyla: önce adresler, sonra numaralar. Yalnız bu işletmenin kaydı; kişinin Rewloy Cüzdan hesabı ya da başka işletmeleri hiçbir zaman (ADR 168) */
+  identifiers: {
+    kind: 'email' | 'phone';
+    /** Adres (küçük harf) ya da numara (E.164, +905…) */
+    value: string;
+    /** Müşteri kendi koduyla doğruladı: yalnız müşteri değiştirir. false: bir kasada, mağazada ya da formda yazıldı; kimse doğrulamadı */
+    verified: boolean;
+    /** Numaranın bu işletmede bir katılımla doğrulandığı an. Adreste her zaman null: adres başka bir işletmede ya da bir Rewloy Cüzdan girişinde doğrulanmış olabilir; yalnız doğrulandığı (`verified`) söylenir. Doğrulanmadıysa null */
+    verifiedAt: string | null;
+  }[];
+  firstName?: string | null;
+  lastName?: string | null;
+  /** Formda, kasada ya da API ile yazılan telefon (yazılan bir numara bir şey kanıtlamaz); doğrulanmış numaralar `identifiers` içinde */
+  phone?: string | null;
+  birthday?: string | null;
+  marketingConsent: boolean;
+  passCount: number;
+  visits: number;
+  lastSeen: string | null;
+  createdAt: string;
+  /** Kaydın bir adresi ya da doğrulanmış numarası bu işletmenin engelli listesinde */
+  blocked: boolean;
+  cards: {
+    passId: string;
+    serial: string;
+    programId: string;
+    programName: string;
+    type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    status: string;
+    balance: number | null;
+    currency: string | null;
+    issuedAt: string;
+    lastUsed: string | null;
+    /** Kartın eklendiği cüzdanlar (Samsung Wallet: Samsung kartın eklendiğini bildirdiyse; Samsung Wallet sunulmadan önceki denemeler sayılmaz) */
+    wallets: Array<'apple' | 'google' | 'samsung'>;
+  }[];
+}
+
+/** Arguments of `listCustomers`. */
+export interface ListCustomersArgs extends RequestOptions {
+  /** Query parameters. */
+  query?: ListCustomersQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listCustomerCards · GET /v1/customers/cards
+
+/** Query parameters of `listCustomerCards`. */
+export interface ListCustomerCardsQuery {
+  /** Ad, kişinin bu işletmedeki herhangi bir adresi ya da numarası, yazılan telefon ya da kart numarası. Bir numara nasıl yazılırsa yazılsın (`0532 123 45 67`, `+90…`, bir parçası) doğrulanmış numaralarda ve yazılan telefonda aranır */
+  q?: string;
+  /** Yalnız bu programın kartı olanlar */
+  programId?: string;
+  /** active: açık kartı olan · ended: bütün kartları kapanmış */
+  status?: 'active' | 'ended';
+  /** Son N gün içinde gelen ya da hiç gelmeyen */
+  lastVisit?: '7' | '30' | '90' | 'never';
+  /** Kampanya iznine göre */
+  consent?: 'yes' | 'no';
+  blocked?: boolean;
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `listCustomerCards`, as sent on the wire. */
+export interface ListCustomerCardsHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listCustomerCards`'s list. */
+export interface ListCustomerCardsItem {
+  passId: string;
+  serial: string;
+  programId: string;
+  programName: string;
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  status: string;
+  balance: number | null;
+  currency: string | null;
+  issuedAt: string;
+  lastUsed: string | null;
+  /** Kartın eklendiği cüzdanlar (Samsung Wallet: Samsung kartın eklendiğini bildirdiyse; Samsung Wallet sunulmadan önceki denemeler sayılmaz) */
+  wallets: Array<'apple' | 'google' | 'samsung'>;
+  personId: string;
+  displayName: string;
+  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. */
+  email: string | null;
+  /** Kişinin bu işletmedeki adresleri ve numaraları, durumlarıyla: önce adresler, sonra numaralar. Yalnız bu işletmenin kaydı; kişinin Rewloy Cüzdan hesabı ya da başka işletmeleri hiçbir zaman (ADR 168) */
+  identifiers: {
+    kind: 'email' | 'phone';
+    /** Adres (küçük harf) ya da numara (E.164, +905…) */
+    value: string;
+    /** Müşteri kendi koduyla doğruladı: yalnız müşteri değiştirir. false: bir kasada, mağazada ya da formda yazıldı; kimse doğrulamadı */
+    verified: boolean;
+    /** Numaranın bu işletmede bir katılımla doğrulandığı an. Adreste her zaman null: adres başka bir işletmede ya da bir Rewloy Cüzdan girişinde doğrulanmış olabilir; yalnız doğrulandığı (`verified`) söylenir. Doğrulanmadıysa null */
+    verifiedAt: string | null;
+  }[];
+}
+
+/** Arguments of `listCustomerCards`. */
+export interface ListCustomerCardsArgs extends RequestOptions {
+  /** Query parameters. */
+  query?: ListCustomerCardsQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// getCustomer · GET /v1/customers/{id}
+
+/** Path parameters of `getCustomer`. */
+export interface GetCustomerParams {
+  id: string;
+}
+
+/** Header parameters of `getCustomer`, as sent on the wire. */
+export interface GetCustomerHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `getCustomer`'s answer. */
+export interface GetCustomerData {
+  personId: string;
+  displayName: string;
+  firstName: string | null;
+  lastName: string | null;
+  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. */
+  email: string | null;
+  /** Kişinin bu işletmedeki adresleri ve numaraları, durumlarıyla: önce adresler, sonra numaralar. Yalnız bu işletmenin kaydı; kişinin Rewloy Cüzdan hesabı ya da başka işletmeleri hiçbir zaman (ADR 168) */
+  identifiers: {
+    kind: 'email' | 'phone';
+    /** Adres (küçük harf) ya da numara (E.164, +905…) */
+    value: string;
+    /** Müşteri kendi koduyla doğruladı: yalnız müşteri değiştirir. false: bir kasada, mağazada ya da formda yazıldı; kimse doğrulamadı */
+    verified: boolean;
+    /** Numaranın bu işletmede bir katılımla doğrulandığı an. Adreste her zaman null: adres başka bir işletmede ya da bir Rewloy Cüzdan girişinde doğrulanmış olabilir; yalnız doğrulandığı (`verified`) söylenir. Doğrulanmadıysa null */
+    verifiedAt: string | null;
+  }[];
+  /** Formda, kasada ya da API ile yazılan telefon (yazılan bir numara bir şey kanıtlamaz); doğrulanmış bir numarayla aynıysa o numaradır */
+  phone: string | null;
+  birthday: string | null;
+  createdAt: string;
+  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. Kişinin gelen kodla doğruladığı numaralar (Rewloy Cüzdan, ADR 164): `phone`dan ayrı; `identifiers` içindeki numaraların aynısı */
+  verifiedPhones: {
+    /** E.164 */
+    phone: string;
+    verifiedAt: string;
+  }[];
+  /** Kaydın bir adresi ya da doğrulanmış numarası bu işletmenin engelli listesinde */
+  blocked: boolean;
+  /** Kişi silinme istedi: bu tarihte silinecek */
+  erasureDue: string | null;
+  marketingConsent: boolean;
+  stats: {
+    visits: number;
+    visits30: number;
+    firstVisit: string | null;
+    lastVisit: string | null;
+    cards: number;
+    activeCards: number;
+    rewardsRedeemed: number;
+    /** Teslim edilen kampanya, otomasyon ve dizi mesajları */
+    messages: number;
+  };
+  cards: {
+    passId: string;
+    serial: string;
+    programId: string;
+    programName: string;
+    type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    status: string;
+    balance: number | null;
+    currency: string | null;
+    issuedAt: string;
+    lastUsed: string | null;
+    /** Kartın eklendiği cüzdanlar (Samsung Wallet: Samsung kartın eklendiğini bildirdiyse; Samsung Wallet sunulmadan önceki denemeler sayılmaz) */
+    wallets: Array<'apple' | 'google' | 'samsung'>;
+    rewardReady: boolean;
+    endedReason: string | null;
+  }[];
+  /** En çok ziyaret ettiği 6 şube */
+  branches: {
+    name: string;
+    visits: number;
+  }[];
+  /** Son 12 haftanın haftalık ziyaretleri (hafta başı, Türkiye) */
+  rhythm: {
+    /** YYYY-AA-GG */
+    week: string;
+    visits: number;
+  }[];
+  /** Onay kayıtları, yeniden eskiye (son 50) */
+  consents: {
+    type: string;
+    granted: boolean;
+    source: string;
+    at: string;
+  }[];
+  /** Bugün içinde olduğu segmentler (plan `segments` özelliği ister) */
+  segments: string[];
+}
+
+/** Arguments of `getCustomer`. */
+export interface GetCustomerArgs extends RequestOptions {
+  /** Path parameters. */
+  params: GetCustomerParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// customerTimeline · GET /v1/customers/{id}/timeline
+
+/** Path parameters of `customerTimeline`. */
+export interface CustomerTimelineParams {
+  id: string;
+}
+
+/** Query parameters of `customerTimeline`. */
+export interface CustomerTimelineQuery {
+  kind?: 'all' | 'points' | 'rewards' | 'spend' | 'visits' | 'messages' | 'cards' | 'contact';
+  passId?: string;
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `customerTimeline`, as sent on the wire. */
+export interface CustomerTimelineHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `customerTimeline`'s list. */
+export interface CustomerTimelineItem {
+  at: string;
+  /** earn, redeem, spend, load, …; visit; campaign, automation:<tür>, sequence; issued; verified:phone; changed:email, changed:phone */
+  kind: string;
+  group: 'points' | 'rewards' | 'spend' | 'visits' | 'messages' | 'cards' | 'contact';
+  /** Defter değişimi (damga, puan ya da kuruş) */
+  delta: number | null;
+  currency: string | null;
+  type: string | null;
+  programName: string | null;
+  serial: string | null;
+  locationName: string | null;
+  actor: string | null;
+  text: string | null;
+  /** Mesajlarda: delivered, opted_out, capped */
+  status: string | null;
+}
+
+/** Arguments of `customerTimeline`. */
+export interface CustomerTimelineArgs extends RequestOptions {
+  /** Path parameters. */
+  params: CustomerTimelineParams;
+  /** Query parameters. */
+  query?: CustomerTimelineQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// sendCustomerCardLink · POST /v1/customers/{id}/cards/{passId}/send-link
+
+/** Path parameters of `sendCustomerCardLink`. */
+export interface SendCustomerCardLinkParams {
+  id: string;
+  passId: string;
+}
+
+/** Header parameters of `sendCustomerCardLink`, as sent on the wire. */
+export interface SendCustomerCardLinkHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `sendCustomerCardLink`'s answer. */
+export interface SendCustomerCardLinkData {
+  sent: boolean;
+}
+
+/** Arguments of `sendCustomerCardLink`. */
+export interface SendCustomerCardLinkArgs extends RequestOptions {
+  /** Path parameters. */
+  params: SendCustomerCardLinkParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// blockCustomer · POST /v1/customers/{id}/block
+
+/** Path parameters of `blockCustomer`. */
+export interface BlockCustomerParams {
+  id: string;
+}
+
+/** Header parameters of `blockCustomer`, as sent on the wire. */
+export interface BlockCustomerHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `blockCustomer`. */
+export interface BlockCustomerBody {
+  reason?: string;
+  endCards?: boolean;
+}
+
+/** The `data` of `blockCustomer`'s answer. */
+export interface BlockCustomerData {
+  blocked: true;
+  endedCards: number;
+  /** E-postanın özeti; e-postası olmayan (yalnız numarasıyla tanınan) müşteride null. Hepsi `entries` içinde */
+  hash: string | null;
+  /** Engellenen her adres ve numara */
+  entries: {
+    kind: 'email' | 'phone';
+    /** Maskeli: a***@g***.com ya da +90 5•• ••• •• 12 */
+    hint: string;
+    /** Engeli kaldırmak için: adresin `DELETE /v1/blocked-emails/{hash}`, numaranın `DELETE /v1/blocked-phones/{hash}` */
+    hash: string;
+  }[];
+}
+
+/** Arguments of `blockCustomer`. */
+export interface BlockCustomerArgs extends RequestOptions {
+  /** Path parameters. */
+  params: BlockCustomerParams;
+  /** The JSON body. */
+  body?: BlockCustomerBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// eraseCustomer · POST /v1/customers/{id}/erase
+
+/** Path parameters of `eraseCustomer`. */
+export interface EraseCustomerParams {
+  id: string;
+}
+
+/** Header parameters of `eraseCustomer`, as sent on the wire. */
+export interface EraseCustomerHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `eraseCustomer`. */
+export interface EraseCustomerBody {
+  password: string;
+  /** Geri alınamaz olduğunu onaylayın */
+  confirm: true;
+}
+
+/** Arguments of `eraseCustomer`. */
+export interface EraseCustomerArgs extends RequestOptions {
+  /** Path parameters. */
+  params: EraseCustomerParams;
+  /** The JSON body. */
+  body: EraseCustomerBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listBlockedEmails · GET /v1/blocked-emails
+
+/** Query parameters of `listBlockedEmails`. */
+export interface ListBlockedEmailsQuery {
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `listBlockedEmails`, as sent on the wire. */
+export interface ListBlockedEmailsHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listBlockedEmails`'s list. */
+export interface ListBlockedEmailsItem {
+  /** Adresin sha256 özeti (küçük harf, boşluksuz adres); adresin kendisi saklanmaz */
+  hash: string;
+  /** a***@g***.com */
+  hint: string;
+  reason: string;
+  at: string;
+  /** Engelleyen ekip üyesinin e-postası ya da API anahtarının adı */
+  by: string | null;
+  /** Adres bu işletmenin bir müşterisine aitse */
+  personId: string | null;
+  activeCards: number;
+}
+
+/** Arguments of `listBlockedEmails`. */
+export interface ListBlockedEmailsArgs extends RequestOptions {
+  /** Query parameters. */
+  query?: ListBlockedEmailsQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// blockEmail · POST /v1/blocked-emails
+
+/** Header parameters of `blockEmail`, as sent on the wire. */
+export interface BlockEmailHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `blockEmail`. */
+export interface BlockEmailBody {
+  email: string;
+  reason?: string;
+}
+
+/** The `data` of `blockEmail`'s answer. */
+export interface BlockEmailData {
+  email: string;
+  blocked: true;
+  hash: string;
+}
+
+/** Arguments of `blockEmail`. */
+export interface BlockEmailArgs extends RequestOptions {
+  /** The JSON body. */
+  body: BlockEmailBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// checkBlockedEmail · GET /v1/blocked-emails/check
+
+/** Query parameters of `checkBlockedEmail`. */
+export interface CheckBlockedEmailQuery {
+  email: string;
+}
+
+/** Header parameters of `checkBlockedEmail`, as sent on the wire. */
+export interface CheckBlockedEmailHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `checkBlockedEmail`'s answer. */
+export interface CheckBlockedEmailData {
+  email: string;
+  blocked: boolean;
+  hash: string;
+}
+
+/** Arguments of `checkBlockedEmail`. */
+export interface CheckBlockedEmailArgs extends RequestOptions {
+  /** Query parameters. */
+  query: CheckBlockedEmailQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// unblockEmail · DELETE /v1/blocked-emails/{hash}
+
+/** Path parameters of `unblockEmail`. */
+export interface UnblockEmailParams {
+  hash: string;
+}
+
+/** Header parameters of `unblockEmail`, as sent on the wire. */
+export interface UnblockEmailHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Arguments of `unblockEmail`. */
+export interface UnblockEmailArgs extends RequestOptions {
+  /** Path parameters. */
+  params: UnblockEmailParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listBlockedPhones · GET /v1/blocked-phones
+
+/** Query parameters of `listBlockedPhones`. */
+export interface ListBlockedPhonesQuery {
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `listBlockedPhones`, as sent on the wire. */
+export interface ListBlockedPhonesHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listBlockedPhones`'s list. */
+export interface ListBlockedPhonesItem {
+  /** Numaranın anahtarlı özeti (HMAC); numaranın kendisi saklanmaz. Engeli bununla kaldırırsınız */
+  hash: string;
+  /** +90 5•• ••• •• 12 */
+  hint: string;
+  reason: string;
+  at: string;
+  /** Engelleyen ekip üyesinin e-postası ya da API anahtarının adı */
+  by: string | null;
+  /** Numara engellendiğinde bu işletmenin bir müşterisinin doğrulanmış numarasıysa */
+  personId: string | null;
+  activeCards: number;
+}
+
+/** Arguments of `listBlockedPhones`. */
+export interface ListBlockedPhonesArgs extends RequestOptions {
+  /** Query parameters. */
+  query?: ListBlockedPhonesQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// blockPhone · POST /v1/blocked-phones
+
+/** Header parameters of `blockPhone`, as sent on the wire. */
+export interface BlockPhoneHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `blockPhone`. */
+export interface BlockPhoneBody {
+  /** Türkiye cep telefonu, nasıl yazılırsa (0532 123 45 67, +90 532…) */
+  phone: string;
+  reason?: string;
+}
+
+/** The `data` of `blockPhone`'s answer. */
+export interface BlockPhoneData {
+  /** E.164 */
+  phone: string;
+  blocked: true;
+  hash: string;
+  hint: string;
+}
+
+/** Arguments of `blockPhone`. */
+export interface BlockPhoneArgs extends RequestOptions {
+  /** The JSON body. */
+  body: BlockPhoneBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// checkBlockedPhone · GET /v1/blocked-phones/check
+
+/** Query parameters of `checkBlockedPhone`. */
+export interface CheckBlockedPhoneQuery {
+  /** Türkiye cep telefonu, nasıl yazılırsa (0532 123 45 67, +90 532…) */
+  phone: string;
+}
+
+/** Header parameters of `checkBlockedPhone`, as sent on the wire. */
+export interface CheckBlockedPhoneHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `checkBlockedPhone`'s answer. */
+export interface CheckBlockedPhoneData {
+  /** E.164 */
+  phone: string;
+  blocked: boolean;
+  /** Numara engelliyse anahtarlı özeti (engeli kaldırmak için); değilse null. Anahtarlı özet yalnız listedeki numaralar için verilir */
+  hash: string | null;
+}
+
+/** Arguments of `checkBlockedPhone`. */
+export interface CheckBlockedPhoneArgs extends RequestOptions {
+  /** Query parameters. */
+  query: CheckBlockedPhoneQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// unblockPhone · DELETE /v1/blocked-phones/{hash}
+
+/** Path parameters of `unblockPhone`. */
+export interface UnblockPhoneParams {
+  hash: string;
+}
+
+/** Header parameters of `unblockPhone`, as sent on the wire. */
+export interface UnblockPhoneHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Arguments of `unblockPhone`. */
+export interface UnblockPhoneArgs extends RequestOptions {
+  /** Path parameters. */
+  params: UnblockPhoneParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
 // listBatches · GET /v1/programs/{id}/batches
 
 /** Path parameters of `listBatches`. */
@@ -2536,7 +3530,18 @@ export interface ListBatchCardsItem {
   passId: string;
   serial: string;
   name: string;
+  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. Kartı alanın adresi. Yerine geçen `identifiers` yalnız `customers.read` yetkisiyle gelir. */
   email: string | null;
+  /** Kişinin bu işletmedeki adresleri ve numaraları, durumlarıyla: önce adresler, sonra numaralar. Yalnız bu işletmenin kaydı; kişinin Rewloy Cüzdan hesabı ya da başka işletmeleri hiçbir zaman (ADR 168). Yalnız `customers.read` yetkisiyle, kimliğin şube kapsamındaki kişiler için gelir */
+  identifiers?: {
+    kind: 'email' | 'phone';
+    /** Adres (küçük harf) ya da numara (E.164, +905…) */
+    value: string;
+    /** Müşteri kendi koduyla doğruladı: yalnız müşteri değiştirir. false: bir kasada, mağazada ya da formda yazıldı; kimse doğrulamadı */
+    verified: boolean;
+    /** Numaranın bu işletmede bir katılımla doğrulandığı an. Adreste her zaman null: adres başka bir işletmede ya da bir Rewloy Cüzdan girişinde doğrulanmış olabilir; yalnız doğrulandığı (`verified`) söylenir. Doğrulanmadıysa null */
+    verifiedAt: string | null;
+  }[];
   status: string;
   uses: number;
   balance: number | null;
@@ -2723,528 +3728,6 @@ export interface BatchQrHeaders {
 export interface BatchQrArgs extends RequestOptions {
   /** Path parameters. */
   params: BatchQrParams;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// listCustomers · GET /v1/customers
-
-/** Query parameters of `listCustomers`. */
-export interface ListCustomersQuery {
-  /** Ad, e-posta, telefon ya da kart numarası. Bir numara nasıl yazılırsa yazılsın (`0532 123 45 67`, `+90…`, bir parçası) doğrulanmış numaralarda ve yazılan telefonda aranır */
-  q?: string;
-  /** Yalnız bu programın kartı olanlar */
-  programId?: string;
-  /** active: açık kartı olan · ended: bütün kartları kapanmış */
-  status?: 'active' | 'ended';
-  /** Son N gün içinde gelen ya da hiç gelmeyen */
-  lastVisit?: '7' | '30' | '90' | 'never';
-  /** Kampanya iznine göre */
-  consent?: 'yes' | 'no';
-  blocked?: boolean;
-  sort?: 'recent' | 'new' | 'name' | 'visits' | 'cards';
-  page?: number;
-  limit?: number;
-}
-
-/** Header parameters of `listCustomers`, as sent on the wire. */
-export interface ListCustomersHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** One item of `listCustomers`'s list. */
-export interface ListCustomersItem {
-  personId: string;
-  displayName: string;
-  email: string | null;
-  firstName?: string | null;
-  lastName?: string | null;
-  phone?: string | null;
-  birthday?: string | null;
-  marketingConsent: boolean;
-  passCount: number;
-  visits: number;
-  lastSeen: string | null;
-  createdAt: string;
-  blocked: boolean;
-  cards: {
-    passId: string;
-    serial: string;
-    programId: string;
-    programName: string;
-    type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
-    status: string;
-    balance: number | null;
-    currency: string | null;
-    issuedAt: string;
-    lastUsed: string | null;
-    /** Kartın eklendiği cüzdanlar (Samsung Wallet: Samsung kartın eklendiğini bildirdiyse; Samsung Wallet sunulmadan önceki denemeler sayılmaz) */
-    wallets: Array<'apple' | 'google' | 'samsung'>;
-  }[];
-}
-
-/** Arguments of `listCustomers`. */
-export interface ListCustomersArgs extends RequestOptions {
-  /** Query parameters. */
-  query?: ListCustomersQuery;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// listCustomerCards · GET /v1/customers/cards
-
-/** Query parameters of `listCustomerCards`. */
-export interface ListCustomerCardsQuery {
-  /** Ad, e-posta, telefon ya da kart numarası. Bir numara nasıl yazılırsa yazılsın (`0532 123 45 67`, `+90…`, bir parçası) doğrulanmış numaralarda ve yazılan telefonda aranır */
-  q?: string;
-  /** Yalnız bu programın kartı olanlar */
-  programId?: string;
-  /** active: açık kartı olan · ended: bütün kartları kapanmış */
-  status?: 'active' | 'ended';
-  /** Son N gün içinde gelen ya da hiç gelmeyen */
-  lastVisit?: '7' | '30' | '90' | 'never';
-  /** Kampanya iznine göre */
-  consent?: 'yes' | 'no';
-  blocked?: boolean;
-  page?: number;
-  limit?: number;
-}
-
-/** Header parameters of `listCustomerCards`, as sent on the wire. */
-export interface ListCustomerCardsHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** One item of `listCustomerCards`'s list. */
-export interface ListCustomerCardsItem {
-  passId: string;
-  serial: string;
-  programId: string;
-  programName: string;
-  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
-  status: string;
-  balance: number | null;
-  currency: string | null;
-  issuedAt: string;
-  lastUsed: string | null;
-  /** Kartın eklendiği cüzdanlar (Samsung Wallet: Samsung kartın eklendiğini bildirdiyse; Samsung Wallet sunulmadan önceki denemeler sayılmaz) */
-  wallets: Array<'apple' | 'google' | 'samsung'>;
-  personId: string;
-  displayName: string;
-  email: string | null;
-}
-
-/** Arguments of `listCustomerCards`. */
-export interface ListCustomerCardsArgs extends RequestOptions {
-  /** Query parameters. */
-  query?: ListCustomerCardsQuery;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// getCustomer · GET /v1/customers/{id}
-
-/** Path parameters of `getCustomer`. */
-export interface GetCustomerParams {
-  id: string;
-}
-
-/** Header parameters of `getCustomer`, as sent on the wire. */
-export interface GetCustomerHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `getCustomer`'s answer. */
-export interface GetCustomerData {
-  personId: string;
-  displayName: string;
-  firstName: string | null;
-  lastName: string | null;
-  email: string | null;
-  /** Formda yazılan telefon (yazılan bir numara bir şey kanıtlamaz) */
-  phone: string | null;
-  birthday: string | null;
-  createdAt: string;
-  /** Kişinin gelen kodla doğruladığı numaralar (Rewloy Cüzdan, ADR 164): `phone`dan ayrı; çoğu zaman bir ya da hiç */
-  verifiedPhones: {
-    /** E.164 */
-    phone: string;
-    verifiedAt: string;
-  }[];
-  /** Adresi bu işletmenin engelli listesinde */
-  blocked: boolean;
-  /** Kişi silinme istedi: bu tarihte silinecek */
-  erasureDue: string | null;
-  marketingConsent: boolean;
-  stats: {
-    visits: number;
-    visits30: number;
-    firstVisit: string | null;
-    lastVisit: string | null;
-    cards: number;
-    activeCards: number;
-    rewardsRedeemed: number;
-    /** Teslim edilen kampanya, otomasyon ve dizi mesajları */
-    messages: number;
-  };
-  cards: {
-    passId: string;
-    serial: string;
-    programId: string;
-    programName: string;
-    type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
-    status: string;
-    balance: number | null;
-    currency: string | null;
-    issuedAt: string;
-    lastUsed: string | null;
-    /** Kartın eklendiği cüzdanlar (Samsung Wallet: Samsung kartın eklendiğini bildirdiyse; Samsung Wallet sunulmadan önceki denemeler sayılmaz) */
-    wallets: Array<'apple' | 'google' | 'samsung'>;
-    rewardReady: boolean;
-    endedReason: string | null;
-  }[];
-  /** En çok ziyaret ettiği 6 şube */
-  branches: {
-    name: string;
-    visits: number;
-  }[];
-  /** Son 12 haftanın haftalık ziyaretleri (hafta başı, Türkiye) */
-  rhythm: {
-    /** YYYY-AA-GG */
-    week: string;
-    visits: number;
-  }[];
-  /** Onay kayıtları, yeniden eskiye (son 50) */
-  consents: {
-    type: string;
-    granted: boolean;
-    source: string;
-    at: string;
-  }[];
-  /** Bugün içinde olduğu segmentler (plan `segments` özelliği ister) */
-  segments: string[];
-}
-
-/** Arguments of `getCustomer`. */
-export interface GetCustomerArgs extends RequestOptions {
-  /** Path parameters. */
-  params: GetCustomerParams;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// customerTimeline · GET /v1/customers/{id}/timeline
-
-/** Path parameters of `customerTimeline`. */
-export interface CustomerTimelineParams {
-  id: string;
-}
-
-/** Query parameters of `customerTimeline`. */
-export interface CustomerTimelineQuery {
-  kind?: 'all' | 'points' | 'rewards' | 'spend' | 'visits' | 'messages' | 'cards';
-  passId?: string;
-  page?: number;
-  limit?: number;
-}
-
-/** Header parameters of `customerTimeline`, as sent on the wire. */
-export interface CustomerTimelineHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** One item of `customerTimeline`'s list. */
-export interface CustomerTimelineItem {
-  at: string;
-  /** earn, redeem, spend, load, …; visit; campaign, automation:<tür>, sequence; issued */
-  kind: string;
-  group: 'points' | 'rewards' | 'spend' | 'visits' | 'messages' | 'cards';
-  /** Defter değişimi (damga, puan ya da kuruş) */
-  delta: number | null;
-  currency: string | null;
-  type: string | null;
-  programName: string | null;
-  serial: string | null;
-  locationName: string | null;
-  actor: string | null;
-  text: string | null;
-  /** Mesajlarda: delivered, opted_out, capped */
-  status: string | null;
-}
-
-/** Arguments of `customerTimeline`. */
-export interface CustomerTimelineArgs extends RequestOptions {
-  /** Path parameters. */
-  params: CustomerTimelineParams;
-  /** Query parameters. */
-  query?: CustomerTimelineQuery;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// sendCustomerCardLink · POST /v1/customers/{id}/cards/{passId}/send-link
-
-/** Path parameters of `sendCustomerCardLink`. */
-export interface SendCustomerCardLinkParams {
-  id: string;
-  passId: string;
-}
-
-/** Header parameters of `sendCustomerCardLink`, as sent on the wire. */
-export interface SendCustomerCardLinkHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `sendCustomerCardLink`'s answer. */
-export interface SendCustomerCardLinkData {
-  sent: boolean;
-}
-
-/** Arguments of `sendCustomerCardLink`. */
-export interface SendCustomerCardLinkArgs extends RequestOptions {
-  /** Path parameters. */
-  params: SendCustomerCardLinkParams;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// blockCustomer · POST /v1/customers/{id}/block
-
-/** Path parameters of `blockCustomer`. */
-export interface BlockCustomerParams {
-  id: string;
-}
-
-/** Header parameters of `blockCustomer`, as sent on the wire. */
-export interface BlockCustomerHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `blockCustomer`. */
-export interface BlockCustomerBody {
-  reason?: string;
-  endCards?: boolean;
-}
-
-/** The `data` of `blockCustomer`'s answer. */
-export interface BlockCustomerData {
-  blocked: true;
-  endedCards: number;
-  hash: string;
-}
-
-/** Arguments of `blockCustomer`. */
-export interface BlockCustomerArgs extends RequestOptions {
-  /** Path parameters. */
-  params: BlockCustomerParams;
-  /** The JSON body. */
-  body?: BlockCustomerBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// eraseCustomer · POST /v1/customers/{id}/erase
-
-/** Path parameters of `eraseCustomer`. */
-export interface EraseCustomerParams {
-  id: string;
-}
-
-/** Header parameters of `eraseCustomer`, as sent on the wire. */
-export interface EraseCustomerHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `eraseCustomer`. */
-export interface EraseCustomerBody {
-  password: string;
-  /** Geri alınamaz olduğunu onaylayın */
-  confirm: true;
-}
-
-/** Arguments of `eraseCustomer`. */
-export interface EraseCustomerArgs extends RequestOptions {
-  /** Path parameters. */
-  params: EraseCustomerParams;
-  /** The JSON body. */
-  body: EraseCustomerBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// listBlockedEmails · GET /v1/blocked-emails
-
-/** Query parameters of `listBlockedEmails`. */
-export interface ListBlockedEmailsQuery {
-  page?: number;
-  limit?: number;
-}
-
-/** Header parameters of `listBlockedEmails`, as sent on the wire. */
-export interface ListBlockedEmailsHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** One item of `listBlockedEmails`'s list. */
-export interface ListBlockedEmailsItem {
-  /** Adresin sha256 özeti (küçük harf, boşluksuz adres); adresin kendisi saklanmaz */
-  hash: string;
-  /** a***@g***.com */
-  hint: string;
-  reason: string;
-  at: string;
-  /** Engelleyen ekip üyesinin e-postası ya da API anahtarının adı */
-  by: string | null;
-  /** Adres bu işletmenin bir müşterisine aitse */
-  personId: string | null;
-  activeCards: number;
-}
-
-/** Arguments of `listBlockedEmails`. */
-export interface ListBlockedEmailsArgs extends RequestOptions {
-  /** Query parameters. */
-  query?: ListBlockedEmailsQuery;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// blockEmail · POST /v1/blocked-emails
-
-/** Header parameters of `blockEmail`, as sent on the wire. */
-export interface BlockEmailHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `blockEmail`. */
-export interface BlockEmailBody {
-  email: string;
-  reason?: string;
-}
-
-/** The `data` of `blockEmail`'s answer. */
-export interface BlockEmailData {
-  email: string;
-  blocked: true;
-  hash: string;
-}
-
-/** Arguments of `blockEmail`. */
-export interface BlockEmailArgs extends RequestOptions {
-  /** The JSON body. */
-  body: BlockEmailBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// checkBlockedEmail · GET /v1/blocked-emails/check
-
-/** Query parameters of `checkBlockedEmail`. */
-export interface CheckBlockedEmailQuery {
-  email: string;
-}
-
-/** Header parameters of `checkBlockedEmail`, as sent on the wire. */
-export interface CheckBlockedEmailHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `checkBlockedEmail`'s answer. */
-export interface CheckBlockedEmailData {
-  email: string;
-  blocked: boolean;
-  hash: string;
-}
-
-/** Arguments of `checkBlockedEmail`. */
-export interface CheckBlockedEmailArgs extends RequestOptions {
-  /** Query parameters. */
-  query: CheckBlockedEmailQuery;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// unblockEmail · DELETE /v1/blocked-emails/{hash}
-
-/** Path parameters of `unblockEmail`. */
-export interface UnblockEmailParams {
-  hash: string;
-}
-
-/** Header parameters of `unblockEmail`, as sent on the wire. */
-export interface UnblockEmailHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Arguments of `unblockEmail`. */
-export interface UnblockEmailArgs extends RequestOptions {
-  /** Path parameters. */
-  params: UnblockEmailParams;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -6649,6 +7132,22 @@ export interface ListShopsItem {
     paused: number;
     currency: number;
   };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+  } | null;
 }
 
 /** The `data` of `listShops`'s answer. */
@@ -6709,6 +7208,22 @@ export interface CreateShopData {
     paused: number;
     currency: number;
   };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+  } | null;
   /** WooCommerce: yalnız bu yanıtta; saklanmaz, yeniden gösterilmez */
   secret: string | null;
 }
@@ -6765,6 +7280,22 @@ export interface GetShopData {
     paused: number;
     currency: number;
   };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+  } | null;
 }
 
 /** Arguments of `getShop`. */
@@ -6824,6 +7355,22 @@ export interface SetShopEnabledData {
     paused: number;
     currency: number;
   };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+  } | null;
 }
 
 /** Arguments of `setShopEnabled`. */
@@ -6906,6 +7453,186 @@ export interface ListShopOrdersArgs extends RequestOptions {
    * `Rewloy-Merchant`. Defaults to the client's `merchant`.
    */
   merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listShopConnectTokens · GET /v1/shops/connect-tokens
+
+/** Header parameters of `listShopConnectTokens`, as sent on the wire. */
+export interface ListShopConnectTokensHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listShopConnectTokens`'s list. */
+export interface ListShopConnectTokensItem {
+  id: string;
+  programId: string;
+  programName: string;
+  rule: 'order' | 'amount';
+  perAmountMinor: number;
+  step: number;
+  createdAt: string;
+  expiresAt: string;
+  /** Kodu oluşturan kişinin e-postası */
+  createdBy: string | null;
+}
+
+/** The `data` of `listShopConnectTokens`'s answer. */
+export type ListShopConnectTokensData = ListShopConnectTokensItem[];
+
+/** Arguments of `listShopConnectTokens`. */
+export interface ListShopConnectTokensArgs extends RequestOptions {
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// createShopConnectToken · POST /v1/shops/connect-tokens
+
+/** Header parameters of `createShopConnectToken`, as sent on the wire. */
+export interface CreateShopConnectTokenHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `createShopConnectToken`. */
+export interface CreateShopConnectTokenBody {
+  programId: string;
+  rule: 'order' | 'amount';
+  perAmountMinor?: number;
+  step?: number;
+  password: string;
+}
+
+/** The `data` of `createShopConnectToken`'s answer. */
+export interface CreateShopConnectTokenData {
+  id: string;
+  programId: string;
+  programName: string;
+  rule: 'order' | 'amount';
+  perAmountMinor: number;
+  step: number;
+  createdAt: string;
+  expiresAt: string;
+  /** Kodu oluşturan kişinin e-postası */
+  createdBy: string | null;
+  /** Eklentiye yapıştırılacak kod: yalnız bu yanıtta; saklanmaz, yeniden gösterilmez. */
+  token: string;
+}
+
+/** Arguments of `createShopConnectToken`. */
+export interface CreateShopConnectTokenArgs extends RequestOptions {
+  /** The JSON body. */
+  body: CreateShopConnectTokenBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// revokeShopConnectToken · DELETE /v1/shops/connect-tokens/{id}
+
+/** Path parameters of `revokeShopConnectToken`. */
+export interface RevokeShopConnectTokenParams {
+  id: string;
+}
+
+/** Header parameters of `revokeShopConnectToken`, as sent on the wire. */
+export interface RevokeShopConnectTokenHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Arguments of `revokeShopConnectToken`. */
+export interface RevokeShopConnectTokenArgs extends RequestOptions {
+  /** Path parameters. */
+  params: RevokeShopConnectTokenParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// connectShop · POST /v1/shops/connect
+
+/** Request body of `connectShop`. */
+export interface ConnectShopBody {
+  token: string;
+  shopName?: string;
+}
+
+/** The `data` of `connectShop`'s answer. */
+export interface ConnectShopData {
+  shop: {
+    id: string;
+    platform: 'shopify' | 'woocommerce';
+    programId: string;
+    programName: string;
+    programType: string;
+    currency: string;
+    /** order: her sipariş · amount: her `perAmountMinor` tutar için */
+    rule: 'order' | 'amount';
+    perAmountMinor: number;
+    /** Her seferinde eklenen damga/puan/ziyaret (cashback kartında tutar oranla hesaplanır) */
+    step: number;
+    enabled: boolean;
+    lastOrderAt: string | null;
+    createdAt: string;
+    /** Mağazanızın sipariş bildirimini göndereceği adres */
+    webhookUrl: string;
+    /** Kayıtlı siparişler sonucuna göre: credited işlendi · unmatched e-postası müşteriyle eşleşmedi · below eşiğin altında · paused bağlantı kapalıyken · currency para birimi farklı */
+    orders: {
+      credited: number;
+      unmatched: number;
+      below: number;
+      paused: number;
+      currency: number;
+    };
+    /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+    lastDelivery: {
+      at: string;
+      result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+    } | null;
+    /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+    lastRefusal: {
+      at: string;
+      reason: 'bad_signature';
+    } | null;
+    /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+    pluginKey: {
+      id: string;
+      prefix: string;
+      name: string;
+    } | null;
+  };
+  /** Bağlantının gizli anahtarı: WooCommerce webhook'unun "Gizli anahtar"ı. Yalnız bu yanıtta; yeniden gösterilmez. */
+  secret: string;
+  apiKey: {
+    id: string;
+    prefix: string;
+    name: string;
+    role: string;
+    /** `rwk_…` (test ortamında `rwk_test_…`): yalnız bu yanıtta; Rewloy yalnız özetini saklar. */
+    token: string;
+  };
+  mode: 'live' | 'test';
+}
+
+/** Arguments of `connectShop`. */
+export interface ConnectShopArgs extends RequestOptions {
+  /** The JSON body. */
+  body: ConnectShopBody;
 }
 
 // ----------------------------------------------------------------------
@@ -7381,6 +8108,8 @@ export interface ListApiKeysItem {
   actions30: number;
   /** Bunlardan reddedilenler */
   refused30: number;
+  /** Mağaza eklentisinin bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) ait olduğu mağaza bağlantısı: yalnız onu görür ve yönetir, bağlantı silinince iptal edilir. Yoksa null. */
+  shopId: string | null;
 }
 
 /** The `data` of `listApiKeys`'s answer. */
@@ -7441,6 +8170,8 @@ export interface CreateApiKeyData {
     actions30: number;
     /** Bunlardan reddedilenler */
     refused30: number;
+    /** Mağaza eklentisinin bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) ait olduğu mağaza bağlantısı: yalnız onu görür ve yönetir, bağlantı silinince iptal edilir. Yoksa null. */
+    shopId: string | null;
   };
   /** Yalnız bu yanıtta; saklanmaz */
   token: string;
@@ -7493,6 +8224,8 @@ export interface GetApiKeyData {
   actions30: number;
   /** Bunlardan reddedilenler */
   refused30: number;
+  /** Mağaza eklentisinin bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) ait olduğu mağaza bağlantısı: yalnız onu görür ve yönetir, bağlantı silinince iptal edilir. Yoksa null. */
+  shopId: string | null;
 }
 
 /** Arguments of `getApiKey`. */
@@ -7870,6 +8603,154 @@ export interface TestWebhookData {
 export interface TestWebhookArgs extends RequestOptions {
   /** Path parameters. */
   params: TestWebhookParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// getTestEnvironment · GET /v1/test/environment
+
+/** Header parameters of `getTestEnvironment`, as sent on the wire. */
+export interface GetTestEnvironmentHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `getTestEnvironment`'s answer. */
+export interface GetTestEnvironmentData {
+  /** Çağrı test ortamında yapıldı */
+  inTest: boolean;
+  real: {
+    id: string;
+    name: string;
+  };
+  /** Açık test ortamı; yoksa `null` */
+  test: {
+    merchantId: string;
+    name: string;
+    createdAt: string;
+  } | null;
+  /** Bu kişinin test ortamında etkin bir koltuğu var */
+  seated: boolean;
+  outbox: number;
+  customers: number;
+  cards: number;
+  limits: {
+    customers: number;
+    cards: number;
+    outboxKept: number;
+    outboxDays: number;
+  };
+}
+
+/** Arguments of `getTestEnvironment`. */
+export interface GetTestEnvironmentArgs extends RequestOptions {
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// openTestEnvironment · POST /v1/test/environment
+
+/** Header parameters of `openTestEnvironment`, as sent on the wire. */
+export interface OpenTestEnvironmentHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `openTestEnvironment`'s answer. */
+export interface OpenTestEnvironmentData {
+  /** Test ortamının işletme kimliği: ekip oturumunda `Rewloy-Merchant` ile seçilir */
+  merchantId: string;
+  /** Gerçek işletmenin adı ve " · Test" */
+  name: string;
+  /** true: bu istekle açıldı; false: zaten açıktı */
+  created: boolean;
+}
+
+/** Arguments of `openTestEnvironment`. */
+export interface OpenTestEnvironmentArgs extends RequestOptions {
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// resetTestEnvironment · POST /v1/test/environment/reset
+
+/** Header parameters of `resetTestEnvironment`, as sent on the wire. */
+export interface ResetTestEnvironmentHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `resetTestEnvironment`'s answer. */
+export interface ResetTestEnvironmentData {
+  merchantId: string;
+  name: string;
+  /** Kapatılan eski test ortamı; yoksa `null` */
+  closed: string | null;
+}
+
+/** Arguments of `resetTestEnvironment`. */
+export interface ResetTestEnvironmentArgs extends RequestOptions {
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listTestMessages · GET /v1/test/messages
+
+/** Query parameters of `listTestMessages`. */
+export interface ListTestMessagesQuery {
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `listTestMessages`, as sent on the wire. */
+export interface ListTestMessagesHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listTestMessages`'s list. */
+export interface ListTestMessagesItem {
+  id: string;
+  /** Ne olacağı: e-postanın türü (`card.link`, `apikey.created` …), `campaign`, `automation`, `reward_ready` */
+  kind: string;
+  /** `wallet`: kartın kendisinin taşıdığı mesaj (Apple ve Google cüzdanlarının kilit ekranı bildirimi) */
+  channel: 'mail' | 'push' | 'sms' | 'whatsapp' | 'wallet';
+  /** Maskeli alıcı (e-posta, numara) ya da kartın seri numarası */
+  recipient: string;
+  /** E-postanın konusu ya da bildirimin başlığı */
+  subject: string;
+  /** Metin */
+  body: string;
+  /** İlgili kartın seri numarası */
+  card: string | null;
+  customerId: string | null;
+  at: string;
+}
+
+/** Arguments of `listTestMessages`. */
+export interface ListTestMessagesArgs extends RequestOptions {
+  /** Query parameters. */
+  query?: ListTestMessagesQuery;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -8311,236 +9192,6 @@ export interface ReportBugData {
 export interface ReportBugArgs extends RequestOptions {
   /** The JSON body. */
   body: ReportBugBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// publicProgram · GET /v1/public/programs/{id}
-
-/** Path parameters of `publicProgram`. */
-export interface PublicProgramParams {
-  id: string;
-}
-
-/** Header parameters of `publicProgram`, as sent on the wire. */
-export interface PublicProgramHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `publicProgram`'s answer. */
-export interface PublicProgramData {
-  programId: string;
-  businessName: string;
-  programName: string;
-  type: string;
-  fields: {
-    id: 'firstName' | 'lastName' | 'phone' | 'birthday';
-    required: boolean;
-  }[];
-  colors: {
-    background: string;
-    foreground: string;
-    label: string;
-    accent: string;
-  };
-  logoUrl: string;
-  bannerUrl: string | null;
-  joinUrl: string;
-  privacyUrl: string;
-}
-
-/** Arguments of `publicProgram`. */
-export interface PublicProgramArgs extends RequestOptions {
-  /** Path parameters. */
-  params: PublicProgramParams;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// joinProgram · POST /v1/public/programs/{id}/join
-
-/** Path parameters of `joinProgram`. */
-export interface JoinProgramParams {
-  id: string;
-}
-
-/** Header parameters of `joinProgram`, as sent on the wire. */
-export interface JoinProgramHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `joinProgram`. */
-export interface JoinProgramBody {
-  email: string;
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
-  /** YYYY-AA-GG */
-  birthday?: string;
-  /** Kişiye işletmenin aydınlatma metni sunuldu (işletmenin beyanı; doğruluğundan işletme sorumludur). Bunu bir rıza kutusu olarak sormayın. */
-  kvkkConsent: true;
-}
-
-/** The `data` of `joinProgram`'s answer. */
-export interface JoinProgramData {
-  /** false: bu e-postanın bu programda zaten kartı var; bağlantısı kişinin e-postasına gönderildi */
-  created: boolean;
-  serial: string | null;
-  /** Kartın özel bağlantısı — yalnız yeni kartta; yalnız kişiye gösterin */
-  cardUrl: string | null;
-}
-
-/** Arguments of `joinProgram`. */
-export interface JoinProgramArgs extends RequestOptions {
-  /** Path parameters. */
-  params: JoinProgramParams;
-  /** The JSON body. */
-  body: JoinProgramBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// publicCode · GET /v1/public/codes/{code}
-
-/** Path parameters of `publicCode`. */
-export interface PublicCodeParams {
-  code: string;
-}
-
-/** Header parameters of `publicCode`, as sent on the wire. */
-export interface PublicCodeHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** The `data` of `publicCode`'s answer. */
-export interface PublicCodeData {
-  code: string;
-  name: string;
-  type: 'giftcard' | 'voucher' | 'discount';
-  businessName: string;
-  valueMinor: number | null;
-  currency: string | null;
-  offerText: string | null;
-  percent: number | null;
-  usage: 'once' | 'limited' | 'unlimited';
-  usageLimit: number | null;
-  validUntil: string | null;
-  fields: {
-    id: 'firstName' | 'lastName' | 'phone' | 'birthday';
-    required: boolean;
-  }[];
-  claimable: boolean;
-  /** Alınamıyorsa neden */
-  reason: 'closed' | 'full' | 'expired' | null;
-}
-
-/** Arguments of `publicCode`. */
-export interface PublicCodeArgs extends RequestOptions {
-  /** Path parameters. */
-  params: PublicCodeParams;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// claimCode · POST /v1/public/codes/{code}/claim
-
-/** Path parameters of `claimCode`. */
-export interface ClaimCodeParams {
-  code: string;
-}
-
-/** Header parameters of `claimCode`, as sent on the wire. */
-export interface ClaimCodeHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `claimCode`. */
-export interface ClaimCodeBody {
-  email: string;
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
-  /** YYYY-AA-GG */
-  birthday?: string;
-  /** Kişiye işletmenin aydınlatma metni sunuldu (işletmenin beyanı; doğruluğundan işletme sorumludur). Bunu bir rıza kutusu olarak sormayın. */
-  kvkkConsent: true;
-}
-
-/** The `data` of `claimCode`'s answer. */
-export interface ClaimCodeData {
-  serial: string;
-  cardUrl: string;
-}
-
-/** Arguments of `claimCode`. */
-export interface ClaimCodeArgs extends RequestOptions {
-  /** Path parameters. */
-  params: ClaimCodeParams;
-  /** The JSON body. */
-  body: ClaimCodeBody;
-  /**
-   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
-   *
-   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
-   */
-  merchant?: string | undefined;
-}
-
-// ----------------------------------------------------------------------
-// emailCardLink · POST /v1/public/cards/{serial}/email-link
-
-/** Path parameters of `emailCardLink`. */
-export interface EmailCardLinkParams {
-  /** Kart seri numarası, XXXX-XXXX-XXXX */
-  serial: string;
-}
-
-/** Header parameters of `emailCardLink`, as sent on the wire. */
-export interface EmailCardLinkHeaders {
-  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
-  'Rewloy-Merchant'?: string;
-}
-
-/** Request body of `emailCardLink`. */
-export interface EmailCardLinkBody {
-  email: string;
-}
-
-/** The `data` of `emailCardLink`'s answer. */
-export interface EmailCardLinkData {
-  accepted: true;
-}
-
-/** Arguments of `emailCardLink`. */
-export interface EmailCardLinkArgs extends RequestOptions {
-  /** Path parameters. */
-  params: EmailCardLinkParams;
-  /** The JSON body. */
-  body: EmailCardLinkBody;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -9261,6 +9912,28 @@ export interface HolderAccountData {
   }[];
   /** Oturumu açık cihazlar (`GET /v1/holder/devices`) */
   devices: number;
+  /** Bekleyen giriş yolu değişikliği (ADR 170): hesaba girmenin 72 saatten eski başka bir yolu yokken yapılan değişiklik süre dolana kadar bekler. `byThisDevice` ise kişiye "Vazgeç", değilse "Bu değişikliği ben yapmadım" gösterin; ikisi de `DELETE /v1/holder/changes/{id}`. */
+  pendingChange: {
+    id: string;
+    kind: 'email' | 'phone';
+    /** Değişen adres ya da numara, maskeli (`a•••@gmail.com`, `+90 5•• ••• •• 12`) */
+    from: string;
+    /** Yenisi, maskeli */
+    to: string;
+    /** Uygulanacağı an; o zamana kadar eskisiyle girilir, yenisiyle girilmez */
+    dueAt: string;
+    /** Değişikliği bu cihaz istedi */
+    byThisDevice: boolean;
+  } | null;
+  /** Bu hesap için onaylanmış ve bekleyen bir kurtarma talebi (ADR 170): süre dolunca hesap yeni adrese ya da numaraya taşınır ve bütün oturumlar kapanır. Kişiye "Bu değişikliği ben yapmadım" gösterin: `DELETE /v1/holder/changes/{id}`. */
+  pendingRecovery: {
+    id: string;
+    /** Talebin numarası (K-7Q2M9X) */
+    number: string;
+    /** Hesabın taşınacağı adres ya da numara, maskeli */
+    to: string;
+    dueAt: string;
+  } | null;
 }
 
 /** Arguments of `holderAccount`. */
@@ -9471,6 +10144,24 @@ export interface MergeHolderAccountsData {
   merged: boolean;
   /** Bu oturumun bundan sonraki hesabı */
   accountId: string;
+  /** Soruyu bir giriş yolu değişikliği sorduysa (`POST /v1/holder/identities/{id}/replace/verify`, ADR 170): birleşince yapılan değişiklik; `keep` ise ya da soruyu başka bir adım sorduysa `null` */
+  change: {
+    /** applied: yenisi eskisinin yerini hemen aldı (hesaba girmenin en az 72 saatlik başka bir yolu vardı); pending: böyle bir yol olmadığı için süre dolana kadar bekliyor */
+    status: 'applied' | 'pending';
+    /** `pending` ise bekleyen değişiklik */
+    change: {
+      id: string;
+      kind: 'email' | 'phone';
+      /** Değişen adres ya da numara, maskeli (`a•••@gmail.com`, `+90 5•• ••• •• 12`) */
+      from: string;
+      /** Yenisi, maskeli */
+      to: string;
+      /** Uygulanacağı an; o zamana kadar eskisiyle girilir, yenisiyle girilmez */
+      dueAt: string;
+      /** Değişikliği bu cihaz istedi */
+      byThisDevice: boolean;
+    } | null;
+  } | null;
 }
 
 /** Arguments of `mergeHolderAccounts`. */
@@ -9491,6 +10182,97 @@ export interface RemoveHolderEmailParams {
 export interface RemoveHolderEmailArgs extends RequestOptions {
   /** Path parameters. */
   params: RemoveHolderEmailParams;
+}
+
+// ----------------------------------------------------------------------
+// replaceHolderIdentity · POST /v1/holder/identities/{id}/replace
+
+/** Path parameters of `replaceHolderIdentity`. */
+export interface ReplaceHolderIdentityParams {
+  id: string;
+}
+
+/** Request body of `replaceHolderIdentity`. */
+export interface ReplaceHolderIdentityBody {
+  /** Yeni e-posta (bir e-postanın yerine) */
+  email?: string;
+  /** Yeni numara (bir numaranın yerine) */
+  phone?: string;
+  /** Kodun gideceği yol: `whatsapp` ya da `sms` (yalnız `phone` ile). Verilmezse şu an açık olan ilk yol (önce WhatsApp). Açık değilse `501 NOT_ENABLED`, bugünkü bütçesi dolduysa `503 PHONE_BUSY`; ikisinde de `details.channels` şu an açık olanları söyler. */
+  channel?: 'whatsapp' | 'sms';
+}
+
+/** The `data` of `replaceHolderIdentity`'s answer. */
+export interface ReplaceHolderIdentityData {
+  /** Akışı açan adımın döndürdüğü `request`: tarayıcıdaki çerezin uygulamadaki karşılığı. */
+  request: string;
+  /** Numaraya kodun gittiği yol; e-postada yok */
+  channel?: 'whatsapp' | 'sms';
+}
+
+/** Arguments of `replaceHolderIdentity`. */
+export interface ReplaceHolderIdentityArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ReplaceHolderIdentityParams;
+  /** The JSON body. */
+  body?: ReplaceHolderIdentityBody;
+}
+
+// ----------------------------------------------------------------------
+// verifyHolderIdentityReplace · POST /v1/holder/identities/{id}/replace/verify
+
+/** Path parameters of `verifyHolderIdentityReplace`. */
+export interface VerifyHolderIdentityReplaceParams {
+  id: string;
+}
+
+/** Request body of `verifyHolderIdentityReplace`. */
+export interface VerifyHolderIdentityReplaceBody {
+  /** Akışı açan adımın döndürdüğü `request`: tarayıcıdaki çerezin uygulamadaki karşılığı. */
+  request: string;
+  /** Yeniye gelen 6 haneli kod */
+  code: string;
+}
+
+/** The `data` of `verifyHolderIdentityReplace`'s answer. */
+export interface VerifyHolderIdentityReplaceData {
+  /** applied: yenisi eskisinin yerini hemen aldı (hesaba girmenin en az 72 saatlik başka bir yolu vardı); pending: böyle bir yol olmadığı için süre dolana kadar bekliyor */
+  status: 'applied' | 'pending';
+  /** `pending` ise bekleyen değişiklik */
+  change: {
+    id: string;
+    kind: 'email' | 'phone';
+    /** Değişen adres ya da numara, maskeli (`a•••@gmail.com`, `+90 5•• ••• •• 12`) */
+    from: string;
+    /** Yenisi, maskeli */
+    to: string;
+    /** Uygulanacağı an; o zamana kadar eskisiyle girilir, yenisiyle girilmez */
+    dueAt: string;
+    /** Değişikliği bu cihaz istedi */
+    byThisDevice: boolean;
+  } | null;
+}
+
+/** Arguments of `verifyHolderIdentityReplace`. */
+export interface VerifyHolderIdentityReplaceArgs extends RequestOptions {
+  /** Path parameters. */
+  params: VerifyHolderIdentityReplaceParams;
+  /** The JSON body. */
+  body: VerifyHolderIdentityReplaceBody;
+}
+
+// ----------------------------------------------------------------------
+// cancelHolderChange · DELETE /v1/holder/changes/{id}
+
+/** Path parameters of `cancelHolderChange`. */
+export interface CancelHolderChangeParams {
+  id: string;
+}
+
+/** Arguments of `cancelHolderChange`. */
+export interface CancelHolderChangeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: CancelHolderChangeParams;
 }
 
 // ----------------------------------------------------------------------
@@ -9760,7 +10542,7 @@ export interface HolderConsentsArgs extends RequestOptions {}
 export interface HolderDataData {
   generatedAt: string;
   controllerNote: string;
-  /** Rewloy Cüzdan hesabı: createdAt, lastSeenAt, emails, phones (doğrulanmış numaralar: phone, provenAt, lastProvenAt), passkeys, signIns, devices (her biri keySetAt ve lastRenewedAt ile: cihaz anahtarı, web), cardsAddedByLink, favorites (serial, business, program, position, starredAt), hiddenCards (listeden kaldırılan kartlar: serial, business, program, hiddenAt), trail; bildirimler açıkken ya da kayıtları dururken notifications (transactionNotifications, devices: cihaz, platform — web, apns ya da fcm —, servis, ne zamandan beri, son kabul; sent: tür, işletme, kart, başlık, metin, zaman, her cihazın platformu ve sonucu; bildirim adresleri, anahtarlar ve belirteçler yazılmaz) */
+  /** Rewloy Cüzdan hesabı: createdAt, lastSeenAt, flaggedAt (hesap işaretlendiyse ne zaman: bir değişiklik ya da kurtarma talebi "Bu değişikliği ben yapmadım" ile iptal edildi ya da ekip işaretledi, ADR 170), emails, phones (doğrulanmış numaralar: phone, provenAt, lastProvenAt), passkeys, signIns, devices (her biri keySetAt ve lastRenewedAt ile: cihaz anahtarı, web), cardsAddedByLink, favorites (serial, business, program, position, starredAt), hiddenCards (listeden kaldırılan kartlar: serial, business, program, hiddenAt), identityChanges (giriş yolu değişiklikleri: kind, from ve to — maskeli —, state, requestedAt, dueAt, settledAt), recoveryRequests (hesap için açılan kurtarma talepleri: number, oldIdentifier ve newIdentifier — maskeli —, state, requestedAt, dueAt, appliedAt, cancelledAt), trail; bildirimler açıkken ya da kayıtları dururken notifications (transactionNotifications, devices: cihaz, platform — web, apns ya da fcm —, servis, ne zamandan beri, son kabul; sent: tür, işletme, kart, başlık, metin, zaman, her cihazın platformu ve sonucu; bildirim adresleri, anahtarlar ve belirteçler yazılmaz) */
   account: Record<string, unknown>;
   addresses: Record<string, unknown>[];
   numbers: Record<string, unknown>[];
@@ -9835,8 +10617,8 @@ export interface HolderNotificationsQuery {
 /** One item of `holderNotifications`'s list. */
 export interface HolderNotificationsItem {
   id: string;
-  /** campaign: bir işletmenin kampanyası; automation: otomatik mesaj ya da mesaj dizisinin adımı; reward_ready: "Ödülünüz hazır"; test: kişinin kendi denemesi */
-  kind: 'campaign' | 'automation' | 'reward_ready' | 'test';
+  /** campaign: bir işletmenin kampanyası; automation: otomatik mesaj ya da mesaj dizisinin adımı; reward_ready: "Ödülünüz hazır"; test: kişinin kendi denemesi; security: hesabın giriş yolunun değişmesi (yolda ya da yapıldı) ya da onaylanan bir kurtarma talebi */
+  kind: 'campaign' | 'automation' | 'reward_ready' | 'test' | 'security';
   title: string;
   body: string;
   /** Bildirimin işletmesi (`merchantSlug`); denemede `null` */
@@ -10004,9 +10786,274 @@ export interface TestHolderDevicePushData {
 export interface TestHolderDevicePushArgs extends RequestOptions {}
 
 // ----------------------------------------------------------------------
+// startHolderRecovery · POST /v1/holder/recovery
+
+/** Request body of `startHolderRecovery`. */
+export interface StartHolderRecoveryBody {
+  /** Değişen: e-posta ya da numara (eski ve yeni aynı türden) */
+  kind: 'email' | 'phone';
+  /** Eski adres ya da numara */
+  old: string;
+  /** Yeni adres ya da numara: kodla doğrulanır */
+  new: string;
+  /** Kodun gideceği yol: `whatsapp` ya da `sms` (yalnız `phone` ile). Verilmezse şu an açık olan ilk yol (önce WhatsApp). Açık değilse `501 NOT_ENABLED`, bugünkü bütçesi dolduysa `503 PHONE_BUSY`; ikisinde de `details.channels` şu an açık olanları söyler. */
+  channel?: 'whatsapp' | 'sms';
+  /** Kart numaraları (QR kodun altında yazar) */
+  cards?: string[];
+  /** Kartlarının olduğu işletmeler */
+  businesses?: string[];
+  /** 1m: son bir ay · 3m: 1–3 ay · 6m: 3–6 ay · old: 6 aydan önce · unknown: hatırlamıyor */
+  lastVisit?: '1m' | '3m' | '6m' | 'old' | 'unknown';
+  /** Bu kurulumun önceki `rwh_` oturumu, varsa */
+  previousToken?: string;
+}
+
+/** The `data` of `startHolderRecovery`'s answer. */
+export interface StartHolderRecoveryData {
+  /** Talep adımının döndürdüğü `request`: tarayıcıdaki çerezin uygulamadaki karşılığı. */
+  request: string;
+  /** Numaraya kodun gittiği yol; e-postada yok */
+  channel?: 'whatsapp' | 'sms';
+}
+
+/** Arguments of `startHolderRecovery`. */
+export interface StartHolderRecoveryArgs extends RequestOptions {
+  /** The JSON body. */
+  body: StartHolderRecoveryBody;
+}
+
+// ----------------------------------------------------------------------
+// verifyHolderRecovery · POST /v1/holder/recovery/verify
+
+/** Request body of `verifyHolderRecovery`. */
+export interface VerifyHolderRecoveryBody {
+  /** Talep adımının döndürdüğü `request`: tarayıcıdaki çerezin uygulamadaki karşılığı. */
+  request: string;
+  /** Yeniye gelen 6 haneli kod */
+  code: string;
+}
+
+/** The `data` of `verifyHolderRecovery`'s answer. */
+export interface VerifyHolderRecoveryData {
+  /** Talebin anahtarı: `POST /v1/holder/recovery/verify` yanıtında bir kez verilir; uygulama saklar. */
+  token: string;
+  recovery: {
+    /** Talebin numarası (K-7Q2M9X): kişi destek ekibine bununla yazar */
+    number: string;
+    /** review: ekibimiz inceliyor · refused: onaylanamadı (kişiye `supportUrl` ile destek ekibine yazmasını ve işletmenin damga, puan ya da seviyeyi yeni karta verebileceğini söyleyin) · pending_wait / approved: onaylandı, `dueAt` anında uygulanır (hesabın eski giriş yollarına haber gitti) · applied: hesap taşındı, yeni adresle ya da numarayla girilir · cancelled: iptal edildi (`cancelledBy`) */
+    state: 'review' | 'refused' | 'pending_wait' | 'approved' | 'applied' | 'cancelled';
+    kind: 'email' | 'phone';
+    /** Eski adres ya da numara, maskeli */
+    from: string;
+    /** Yenisi, maskeli */
+    to: string;
+    createdAt: string;
+    /** Onaylandıysa uygulanacağı an */
+    dueAt: string | null;
+    /** Destek ekibinin kişiye mesajı (bilgi isteği ya da ret gerekçesi) */
+    message: string | null;
+    messageAt: string | null;
+    /** Son kararı puan mı (`auto`) yoksa destek ekibi mi verdi */
+    decidedBy: 'auto' | 'support';
+    /** owner / link: hesabın eski giriş yollarından biri "Bu değişikliği ben yapmadım" dedi; support: destek ekibi; system: hesap bu arada değişti */
+    cancelledBy: 'owner' | 'link' | 'support' | 'system' | null;
+    /** Destek ekibine yazmanın yolu, talep numarasıyla */
+    supportUrl: string;
+  };
+}
+
+/** Arguments of `verifyHolderRecovery`. */
+export interface VerifyHolderRecoveryArgs extends RequestOptions {
+  /** The JSON body. */
+  body: VerifyHolderRecoveryBody;
+}
+
+// ----------------------------------------------------------------------
+// holderRecoveryStatus · POST /v1/holder/recovery/status
+
+/** Request body of `holderRecoveryStatus`. */
+export interface HolderRecoveryStatusBody {
+  /** Talebin anahtarı: `POST /v1/holder/recovery/verify` yanıtında bir kez verilir; uygulama saklar. */
+  token: string;
+}
+
+/** The `data` of `holderRecoveryStatus`'s answer. */
+export interface HolderRecoveryStatusData {
+  /** Talebin numarası (K-7Q2M9X): kişi destek ekibine bununla yazar */
+  number: string;
+  /** review: ekibimiz inceliyor · refused: onaylanamadı (kişiye `supportUrl` ile destek ekibine yazmasını ve işletmenin damga, puan ya da seviyeyi yeni karta verebileceğini söyleyin) · pending_wait / approved: onaylandı, `dueAt` anında uygulanır (hesabın eski giriş yollarına haber gitti) · applied: hesap taşındı, yeni adresle ya da numarayla girilir · cancelled: iptal edildi (`cancelledBy`) */
+  state: 'review' | 'refused' | 'pending_wait' | 'approved' | 'applied' | 'cancelled';
+  kind: 'email' | 'phone';
+  /** Eski adres ya da numara, maskeli */
+  from: string;
+  /** Yenisi, maskeli */
+  to: string;
+  createdAt: string;
+  /** Onaylandıysa uygulanacağı an */
+  dueAt: string | null;
+  /** Destek ekibinin kişiye mesajı (bilgi isteği ya da ret gerekçesi) */
+  message: string | null;
+  messageAt: string | null;
+  /** Son kararı puan mı (`auto`) yoksa destek ekibi mi verdi */
+  decidedBy: 'auto' | 'support';
+  /** owner / link: hesabın eski giriş yollarından biri "Bu değişikliği ben yapmadım" dedi; support: destek ekibi; system: hesap bu arada değişti */
+  cancelledBy: 'owner' | 'link' | 'support' | 'system' | null;
+  /** Destek ekibine yazmanın yolu, talep numarasıyla */
+  supportUrl: string;
+}
+
+/** Arguments of `holderRecoveryStatus`. */
+export interface HolderRecoveryStatusArgs extends RequestOptions {
+  /** The JSON body. */
+  body: HolderRecoveryStatusBody;
+}
+
+// ----------------------------------------------------------------------
 
 /** Every operation by its operationId: its arguments, what its method resolves to (`result`), what an answer's `data` holds (`data`) and the body of each documented status (`responses`). */
 export interface Operations {
+  issuePass: {
+    args: IssuePassArgs;
+    result: IssuePassData;
+    data: IssuePassData;
+    responses: {
+      201: { data: IssuePassData };
+      400: ErrorBody<'EMAIL_BLOCKED' | 'CUSTOMER_BLOCKED' | 'INVALID_CUSTOMER' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND' | 'LOCATION_NOT_FOUND' | 'SHOP_NOT_FOUND'>;
+      409: ErrorBody<'PASS_REFUSED' | 'TEST_LIMIT_REACHED' | 'SHOP_PROGRAM_MISMATCH' | 'IDEMPOTENCY_IN_PROGRESS'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'CONSENT_REQUIRED' | 'IDEMPOTENCY_KEY_REUSED'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  getPass: {
+    args: GetPassArgs;
+    result: GetPassData;
+    data: GetPassData;
+    responses: {
+      200: { data: GetPassData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  getPassTill: {
+    args: GetPassTillArgs;
+    result: GetPassTillData;
+    data: GetPassTillData;
+    responses: {
+      200: { data: GetPassTillData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  passAction: {
+    args: PassActionArgs;
+    result: PassActionData;
+    data: PassActionData;
+    responses: {
+      200: { data: PassActionData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED' | 'IDEMPOTENCY_KEY_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND'>;
+      409: ErrorBody<'WRONG_LOCATION' | 'INSUFFICIENT_BALANCE' | 'REWARD_NOT_READY' | 'VISIT_ALREADY_COUNTED' | 'PASS_INACTIVE' | 'PASS_EXPIRED' | 'PASS_USED_UP' | 'PASS_REFUSED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'WRONG_CARD_TYPE'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  publicProgram: {
+    args: PublicProgramArgs;
+    result: PublicProgramData;
+    data: PublicProgramData;
+    responses: {
+      200: { data: PublicProgramData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'TEST_MODE_MISMATCH' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
+      410: ErrorBody<'JOIN_CLOSED' | 'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+      503: ErrorBody<'JOIN_CLOSED'>;
+    };
+  };
+  joinProgram: {
+    args: JoinProgramArgs;
+    result: JoinProgramData;
+    data: JoinProgramData;
+    responses: {
+      200: { data: JoinProgramData };
+      400: ErrorBody<'FIELD_REQUIRED' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'EMAIL_BLOCKED' | 'CUSTOMER_BLOCKED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'TEST_MODE_MISMATCH' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'READ_ONLY'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
+      409: ErrorBody<'TEST_LIMIT_REACHED'>;
+      410: ErrorBody<'JOIN_CLOSED' | 'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+      503: ErrorBody<'JOIN_CLOSED'>;
+    };
+  };
+  publicCode: {
+    args: PublicCodeArgs;
+    result: PublicCodeData;
+    data: PublicCodeData;
+    responses: {
+      200: { data: PublicCodeData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'TEST_MODE_MISMATCH' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  claimCode: {
+    args: ClaimCodeArgs;
+    result: ClaimCodeData;
+    data: ClaimCodeData;
+    responses: {
+      201: { data: ClaimCodeData };
+      400: ErrorBody<'FIELD_REQUIRED' | 'EMAIL_BLOCKED' | 'CUSTOMER_BLOCKED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'TEST_MODE_MISMATCH' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'READ_ONLY'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
+      409: ErrorBody<'ALREADY_CLAIMED' | 'TEST_LIMIT_REACHED'>;
+      410: ErrorBody<'BATCH_CLOSED' | 'BATCH_EXPIRED' | 'BATCH_FULL' | 'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  emailCardLink: {
+    args: EmailCardLinkArgs;
+    result: EmailCardLinkData;
+    data: EmailCardLinkData;
+    responses: {
+      202: { data: EmailCardLinkData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'READ_ONLY'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
   openapi: {
     args: OpenapiArgs;
     result: unknown;
@@ -10442,70 +11489,6 @@ export interface Operations {
       500: ErrorBody<'INTERNAL'>;
     };
   };
-  issuePass: {
-    args: IssuePassArgs;
-    result: IssuePassData;
-    data: IssuePassData;
-    responses: {
-      201: { data: IssuePassData };
-      400: ErrorBody<'EMAIL_BLOCKED' | 'INVALID_CUSTOMER' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
-      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
-      409: ErrorBody<'PASS_REFUSED'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'CONSENT_REQUIRED'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  getPass: {
-    args: GetPassArgs;
-    result: GetPassData;
-    data: GetPassData;
-    responses: {
-      200: { data: GetPassData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'PASS_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  getPassTill: {
-    args: GetPassTillArgs;
-    result: GetPassTillData;
-    data: GetPassTillData;
-    responses: {
-      200: { data: GetPassTillData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'PASS_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  passAction: {
-    args: PassActionArgs;
-    result: PassActionData;
-    data: PassActionData;
-    responses: {
-      200: { data: PassActionData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED' | 'IDEMPOTENCY_KEY_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'PASS_NOT_FOUND'>;
-      409: ErrorBody<'WRONG_LOCATION' | 'INSUFFICIENT_BALANCE' | 'REWARD_NOT_READY' | 'VISIT_ALREADY_COUNTED' | 'PASS_INACTIVE' | 'PASS_EXPIRED' | 'PASS_USED_UP' | 'PASS_REFUSED'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'WRONG_CARD_TYPE'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
   listPrograms: {
     args: ListProgramsArgs;
     result: ListProgramsData;
@@ -10734,129 +11717,6 @@ export interface Operations {
       500: ErrorBody<'INTERNAL'>;
     };
   };
-  listBatches: {
-    args: ListBatchesArgs;
-    result: ListBatchesData;
-    data: ListBatchesData;
-    responses: {
-      200: { data: ListBatchesData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'NOT_AN_INSTRUMENT'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  createBatch: {
-    args: CreateBatchArgs;
-    result: CreateBatchData;
-    data: CreateBatchData;
-    responses: {
-      201: { data: CreateBatchData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'OUT_OF_SCOPE' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
-      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'NOT_AN_INSTRUMENT' | 'INVALID_BATCH'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  getBatch: {
-    args: GetBatchArgs;
-    result: GetBatchData;
-    data: GetBatchData;
-    responses: {
-      200: { data: GetBatchData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  listBatchCards: {
-    args: ListBatchCardsArgs;
-    result: Page<ListBatchCardsItem>;
-    data: ListBatchCardsItem[];
-    responses: {
-      200: { data: ListBatchCardsItem[]; meta: PageMeta };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  sendBatchLink: {
-    args: SendBatchLinkArgs;
-    result: SendBatchLinkData;
-    data: SendBatchLinkData;
-    responses: {
-      202: { data: SendBatchLinkData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'BATCH_CLOSED' | 'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  closeBatch: {
-    args: CloseBatchArgs;
-    result: CloseBatchData;
-    data: CloseBatchData;
-    responses: {
-      200: { data: CloseBatchData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'BATCH_CLOSED' | 'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  voidBatchCard: {
-    args: VoidBatchCardArgs;
-    result: VoidBatchCardData;
-    data: VoidBatchCardData;
-    responses: {
-      200: { data: VoidBatchCardData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
-      404: ErrorBody<'BATCH_NOT_FOUND' | 'PASS_NOT_FOUND'>;
-      409: ErrorBody<'ALREADY_ENDED'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  batchQr: {
-    args: BatchQrArgs;
-    result: Blob;
-    data: Blob;
-    responses: {
-      200: Blob;
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
   listCustomers: {
     args: ListCustomersArgs;
     result: Page<ListCustomersItem>;
@@ -11013,6 +11873,186 @@ export interface Operations {
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  listBlockedPhones: {
+    args: ListBlockedPhonesArgs;
+    result: Page<ListBlockedPhonesItem>;
+    data: ListBlockedPhonesItem[];
+    responses: {
+      200: { data: ListBlockedPhonesItem[]; meta: PageMeta };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  blockPhone: {
+    args: BlockPhoneArgs;
+    result: BlockPhoneData;
+    data: BlockPhoneData;
+    responses: {
+      201: { data: BlockPhoneData };
+      400: ErrorBody<'INVALID_PHONE' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  checkBlockedPhone: {
+    args: CheckBlockedPhoneArgs;
+    result: CheckBlockedPhoneData;
+    data: CheckBlockedPhoneData;
+    responses: {
+      200: { data: CheckBlockedPhoneData };
+      400: ErrorBody<'INVALID_PHONE' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  unblockPhone: {
+    args: UnblockPhoneArgs;
+    result: void;
+    data: void;
+    responses: {
+      204: void;
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  listBatches: {
+    args: ListBatchesArgs;
+    result: ListBatchesData;
+    data: ListBatchesData;
+    responses: {
+      200: { data: ListBatchesData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'NOT_AN_INSTRUMENT'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  createBatch: {
+    args: CreateBatchArgs;
+    result: CreateBatchData;
+    data: CreateBatchData;
+    responses: {
+      201: { data: CreateBatchData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'OUT_OF_SCOPE' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'NOT_AN_INSTRUMENT' | 'INVALID_BATCH'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  getBatch: {
+    args: GetBatchArgs;
+    result: GetBatchData;
+    data: GetBatchData;
+    responses: {
+      200: { data: GetBatchData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  listBatchCards: {
+    args: ListBatchCardsArgs;
+    result: Page<ListBatchCardsItem>;
+    data: ListBatchCardsItem[];
+    responses: {
+      200: { data: ListBatchCardsItem[]; meta: PageMeta };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  sendBatchLink: {
+    args: SendBatchLinkArgs;
+    result: SendBatchLinkData;
+    data: SendBatchLinkData;
+    responses: {
+      202: { data: SendBatchLinkData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
+      410: ErrorBody<'BATCH_CLOSED' | 'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  closeBatch: {
+    args: CloseBatchArgs;
+    result: CloseBatchData;
+    data: CloseBatchData;
+    responses: {
+      200: { data: CloseBatchData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
+      410: ErrorBody<'BATCH_CLOSED' | 'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  voidBatchCard: {
+    args: VoidBatchCardArgs;
+    result: VoidBatchCardData;
+    data: VoidBatchCardData;
+    responses: {
+      200: { data: VoidBatchCardData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'BATCH_NOT_FOUND' | 'PASS_NOT_FOUND'>;
+      409: ErrorBody<'ALREADY_ENDED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  batchQr: {
+    args: BatchQrArgs;
+    result: Blob;
+    data: Blob;
+    responses: {
+      200: Blob;
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'BATCH_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -11932,6 +12972,66 @@ export interface Operations {
       500: ErrorBody<'INTERNAL'>;
     };
   };
+  listShopConnectTokens: {
+    args: ListShopConnectTokensArgs;
+    result: ListShopConnectTokensData;
+    data: ListShopConnectTokensData;
+    responses: {
+      200: { data: ListShopConnectTokensData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  createShopConnectToken: {
+    args: CreateShopConnectTokenArgs;
+    result: CreateShopConnectTokenData;
+    data: CreateShopConnectTokenData;
+    responses: {
+      201: { data: CreateShopConnectTokenData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'STEP_UP_FAILED' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
+      409: ErrorBody<'LIMIT'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'NOT_AN_INSTRUMENT'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  revokeShopConnectToken: {
+    args: RevokeShopConnectTokenArgs;
+    result: void;
+    data: void;
+    responses: {
+      204: void;
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'CONNECT_TOKEN_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  connectShop: {
+    args: ConnectShopArgs;
+    result: ConnectShopData;
+    data: ConnectShopData;
+    responses: {
+      201: { data: ConnectShopData };
+      400: ErrorBody<'VALIDATION'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING'>;
+      404: ErrorBody<'CONNECT_TOKEN_INVALID'>;
+      409: ErrorBody<'LIMIT'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
   listTeam: {
     args: ListTeamArgs;
     result: ListTeamData;
@@ -12274,6 +13374,65 @@ export interface Operations {
       500: ErrorBody<'INTERNAL'>;
     };
   };
+  getTestEnvironment: {
+    args: GetTestEnvironmentArgs;
+    result: GetTestEnvironmentData;
+    data: GetTestEnvironmentData;
+    responses: {
+      200: { data: GetTestEnvironmentData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  openTestEnvironment: {
+    args: OpenTestEnvironmentArgs;
+    result: OpenTestEnvironmentData;
+    data: OpenTestEnvironmentData;
+    responses: {
+      200: { data: OpenTestEnvironmentData };
+      201: { data: OpenTestEnvironmentData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      409: ErrorBody<'TEST_ENV_NESTED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  resetTestEnvironment: {
+    args: ResetTestEnvironmentArgs;
+    result: ResetTestEnvironmentData;
+    data: ResetTestEnvironmentData;
+    responses: {
+      200: { data: ResetTestEnvironmentData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      409: ErrorBody<'TEST_ENV_NESTED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  listTestMessages: {
+    args: ListTestMessagesArgs;
+    result: Page<ListTestMessagesItem>;
+    data: ListTestMessagesItem[];
+    responses: {
+      200: { data: ListTestMessagesItem[]; meta: PageMeta };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'TEST_ENV_ONLY' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
   listNotifications: {
     args: ListNotificationsArgs;
     result: Page<ListNotificationsItem>;
@@ -12413,83 +13572,6 @@ export interface Operations {
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  publicProgram: {
-    args: PublicProgramArgs;
-    result: PublicProgramData;
-    data: PublicProgramData;
-    responses: {
-      200: { data: PublicProgramData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING'>;
-      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
-      410: ErrorBody<'JOIN_CLOSED' | 'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-      503: ErrorBody<'JOIN_CLOSED'>;
-    };
-  };
-  joinProgram: {
-    args: JoinProgramArgs;
-    result: JoinProgramData;
-    data: JoinProgramData;
-    responses: {
-      200: { data: JoinProgramData };
-      400: ErrorBody<'FIELD_REQUIRED' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'EMAIL_BLOCKED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'READ_ONLY'>;
-      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
-      410: ErrorBody<'JOIN_CLOSED' | 'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-      503: ErrorBody<'JOIN_CLOSED'>;
-    };
-  };
-  publicCode: {
-    args: PublicCodeArgs;
-    result: PublicCodeData;
-    data: PublicCodeData;
-    responses: {
-      200: { data: PublicCodeData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  claimCode: {
-    args: ClaimCodeArgs;
-    result: ClaimCodeData;
-    data: ClaimCodeData;
-    responses: {
-      201: { data: ClaimCodeData };
-      400: ErrorBody<'FIELD_REQUIRED' | 'EMAIL_BLOCKED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'READ_ONLY'>;
-      404: ErrorBody<'BATCH_NOT_FOUND'>;
-      409: ErrorBody<'ALREADY_CLAIMED'>;
-      410: ErrorBody<'BATCH_CLOSED' | 'BATCH_EXPIRED' | 'BATCH_FULL' | 'TOKEN_INVALID'>;
-      429: ErrorBody<'RATE_LIMITED'>;
-      500: ErrorBody<'INTERNAL'>;
-    };
-  };
-  emailCardLink: {
-    args: EmailCardLinkArgs;
-    result: EmailCardLinkData;
-    data: EmailCardLinkData;
-    responses: {
-      202: { data: EmailCardLinkData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'READ_ONLY'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -12764,7 +13846,7 @@ export interface Operations {
     responses: {
       200: { data: JoinHolderProgramData };
       201: { data: JoinHolderProgramData };
-      400: ErrorBody<'FIELD_REQUIRED' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'EMAIL_BLOCKED' | 'VALIDATION'>;
+      400: ErrorBody<'FIELD_REQUIRED' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'EMAIL_BLOCKED' | 'PHONE_BLOCKED' | 'CUSTOMER_BLOCKED' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'PROGRAM_NOT_FOUND'>;
@@ -12781,7 +13863,7 @@ export interface Operations {
     responses: {
       200: { data: ClaimHolderCodeData };
       201: { data: ClaimHolderCodeData };
-      400: ErrorBody<'FIELD_REQUIRED' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'EMAIL_BLOCKED' | 'VALIDATION'>;
+      400: ErrorBody<'FIELD_REQUIRED' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'EMAIL_BLOCKED' | 'PHONE_BLOCKED' | 'CUSTOMER_BLOCKED' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'BATCH_NOT_FOUND'>;
@@ -12857,7 +13939,7 @@ export interface Operations {
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'NOT_FOUND'>;
-      409: ErrorBody<'LAST_WAY_IN'>;
+      409: ErrorBody<'LAST_WAY_IN' | 'WAY_IN_TOO_NEW'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -12948,7 +14030,56 @@ export interface Operations {
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'NOT_FOUND'>;
-      409: ErrorBody<'LAST_WAY_IN'>;
+      409: ErrorBody<'LAST_WAY_IN' | 'WAY_IN_TOO_NEW'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  replaceHolderIdentity: {
+    args: ReplaceHolderIdentityArgs;
+    result: ReplaceHolderIdentityData;
+    data: ReplaceHolderIdentityData;
+    responses: {
+      202: { data: ReplaceHolderIdentityData };
+      400: ErrorBody<'VALIDATION' | 'INVALID_PHONE'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'NOT_FOUND'>;
+      409: ErrorBody<'IDENT_SAME'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+      501: ErrorBody<'NOT_ENABLED'>;
+      503: ErrorBody<'PHONE_BUSY'>;
+    };
+  };
+  verifyHolderIdentityReplace: {
+    args: VerifyHolderIdentityReplaceArgs;
+    result: VerifyHolderIdentityReplaceData;
+    data: VerifyHolderIdentityReplaceData;
+    responses: {
+      200: { data: VerifyHolderIdentityReplaceData };
+      400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'NOT_FOUND'>;
+      409: ErrorBody<'MERGE_REQUIRED' | 'IDENT_SAME'>;
+      410: ErrorBody<'FLOW_EXPIRED' | 'TOKEN_INVALID'>;
+      429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  cancelHolderChange: {
+    args: CancelHolderChangeArgs;
+    result: void;
+    data: void;
+    responses: {
+      204: void;
+      400: ErrorBody<'VALIDATION'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -13014,6 +14145,7 @@ export interface Operations {
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'NOT_FOUND'>;
+      409: ErrorBody<'CHANGE_PENDING'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -13028,6 +14160,7 @@ export interface Operations {
       400: ErrorBody<'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      409: ErrorBody<'CHANGE_PENDING'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -13256,6 +14389,43 @@ export interface Operations {
       501: ErrorBody<'NOT_ENABLED'>;
     };
   };
+  startHolderRecovery: {
+    args: StartHolderRecoveryArgs;
+    result: StartHolderRecoveryData;
+    data: StartHolderRecoveryData;
+    responses: {
+      202: { data: StartHolderRecoveryData };
+      400: ErrorBody<'VALIDATION' | 'INVALID_PHONE'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+      501: ErrorBody<'NOT_ENABLED'>;
+      503: ErrorBody<'PHONE_BUSY'>;
+    };
+  };
+  verifyHolderRecovery: {
+    args: VerifyHolderRecoveryArgs;
+    result: VerifyHolderRecoveryData;
+    data: VerifyHolderRecoveryData;
+    responses: {
+      201: { data: VerifyHolderRecoveryData };
+      400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
+      410: ErrorBody<'FLOW_EXPIRED'>;
+      429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  holderRecoveryStatus: {
+    args: HolderRecoveryStatusArgs;
+    result: HolderRecoveryStatusData;
+    data: HolderRecoveryStatusData;
+    responses: {
+      200: { data: HolderRecoveryStatusData };
+      400: ErrorBody<'VALIDATION'>;
+      404: ErrorBody<'NOT_FOUND'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
 }
 
 /** Every operationId. */
@@ -13263,11 +14433,12 @@ export type OperationId = keyof Operations;
 
 /** The paged lists: `Rewloy.paginate` walks them. */
 export type PagedOperationId =
-  | 'listBatchCards'
   | 'listCustomers'
   | 'listCustomerCards'
   | 'customerTimeline'
   | 'listBlockedEmails'
+  | 'listBlockedPhones'
+  | 'listBatchCards'
   | 'listSegmentCards'
   | 'listCampaigns'
   | 'listCampaignRecipients'
@@ -13278,6 +14449,7 @@ export type PagedOperationId =
   | 'listShopOrders'
   | 'listApiKeyRequests'
   | 'listWebhookDeliveries'
+  | 'listTestMessages'
   | 'listNotifications'
   | 'listTickets'
   | 'holderNotifications';

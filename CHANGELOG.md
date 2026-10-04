@@ -5,6 +5,15 @@ https://rewloy.com/gelistiriciler/degisiklikler
 
 This library's releases. The API's own changes are listed at the link above.
 
+## Unreleased
+
+- Regenerated from the API as of 4 Oct 2026: 237 operations.
+  - Test environment endpoints.
+  - The shop connect flow (`createShopConnectToken`, `connectShop`).
+  - `issuePass` takes `Idempotency-Key`, `orderId` and `shopId`.
+  - Shop health fields.
+- The retry tests use `createSegment` as their POST without an idempotency key: `issuePass` now takes one.
+
 ## 0.1.0 (yayımlanmadı / unreleased)
 
 İlk önizleme. Rewloy API 1.0.0'a göre üretildi: 180 yol, 219 işlem.
