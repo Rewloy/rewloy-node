@@ -2,7 +2,7 @@
 
 **Rewloy API'nin resmî Node.js ve TypeScript kütüphanesi.**
 
-> **Durum: önizleme (0.x): yayımlanmadı; API kararlı, kütüphane arayüzü 1.0'a kadar değişebilir.**
+> **Durum: önizleme (0.x), npm'de yayımlandı. API kararlı; kütüphane arayüzü 1.0'a kadar değişebilir.**
 
 [Rewloy](https://rewloy.com), işletmelerin dijital sadakat kartlarını
 müşterinin telefonuna koyar. Kart türleri damga, puan, VIP, cashback, hediye
@@ -27,15 +27,11 @@ ile de yapılabilir; bu kütüphane onu Node.js'ten kullanır:
 
 ## Kurulum
 
-npm'de yayımlanana kadar GitHub'dan kurun (Node 22 ya da üstü ve git gerekir):
+Node 22 ya da üstü gerekir:
 
 ```sh
-npm install github:Rewloy/rewloy-node
+npm install @rewloy/node
 ```
-
-Kurulum kütüphaneyi kaynağından derler. Bir sürüme bağlı kalmak için sona bir
-commit ekleyin: `github:Rewloy/rewloy-node#<commit>`. Yayımlandığında:
-`npm install @rewloy/node`.
 
 ## Başlarken
 
@@ -370,7 +366,7 @@ Bir güvenlik açığı bulursanız [SECURITY.md](SECURITY.md) dosyasındaki yol
 
 **The official Node.js and TypeScript library for the Rewloy API.**
 
-> **Status: preview (0.x), not published yet. The API is stable; the
+> **Status: preview (0.x), published on npm. The API is stable; the
 > library's interface may change until 1.0.**
 
 The documentation of the API itself is in Turkish (links above). In short:
@@ -383,11 +379,10 @@ The documentation of the API itself is in Turkish (links above). In short:
 
 ### Install
 
-Until it is on npm, install it from GitHub (Node 22 or later and git;
-it builds on install). Pin a commit with `#<commit>`.
+Node 22 or later:
 
 ```sh
-npm install github:Rewloy/rewloy-node
+npm install @rewloy/node
 ```
 
 ### Use
@@ -456,3 +451,9 @@ const event = verifyWebhook({ payload: req.body, header: req.get('Rewloy-Signatu
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) says.
 [MIT](LICENSE) licensed.
+
+## Yeni sürüm yayımlamak / Releasing
+
+`package.json`'daki sürümü ve CHANGELOG'u güncelleyin, commit'leyin, `v<sürüm>` etiketini gönderin (`git tag v0.2.0 && git push origin v0.2.0`). `release.yml` npm'e güvenilir yayıncı (trusted publishing) yoluyla, jetonsuz ve kaynak kanıtıyla (provenance) yayımlar.
+
+Bump the version in `package.json` and the changelog, commit, and push a `v<version>` tag. `release.yml` publishes to npm through trusted publishing: no token, with provenance.
