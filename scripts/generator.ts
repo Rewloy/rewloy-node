@@ -222,6 +222,12 @@ function compound(t: string): boolean {
       for (i++; i < t.length && t[i] !== "'"; i++) if (t[i] === '\\') i++;
       continue;
     }
+    // A doc comment inside an object literal: its text can hold any bracket.
+    if (c === '/' && t[i + 1] === '*') {
+      const end = t.indexOf('*/', i + 2);
+      i = end === -1 ? t.length : end + 1;
+      continue;
+    }
     if (c === '{' || c === '<' || c === '(' || c === '[') depth++;
     else if (c === '}' || c === '>' || c === ')' || c === ']') depth--;
     else if (depth === 0 && (c === '|' || c === '&') && t[i - 1] === ' ') return true;

@@ -86,6 +86,27 @@ export type ErrorCode =
   | 'SHOP_PROGRAM_MISMATCH'
   | 'CONNECT_TOKEN_INVALID'
   | 'CONNECT_TOKEN_NOT_FOUND'
+  | 'NO_PLUGIN_KEY'
+  | 'CODE_EXPIRED'
+  | 'CODE_USED'
+  | 'INVITE_SIGN_IN'
+  | 'INVITE_OTHER_ACCOUNT'
+  | 'CODE_RELEASED'
+  | 'CODE_NOT_ACCEPTED_HERE'
+  | 'CURRENCY_MISMATCH'
+  | 'SHOP_PAUSED'
+  | 'VOUCHER_NOT_ONLINE'
+  | 'NOT_ONLINE'
+  | 'TOO_MANY_CODES'
+  | 'CODE_ATTACHED'
+  | 'CODE_NOT_FOUND'
+  | 'CARD_IN_ORDER'
+  | 'ORDER_CODES_LIMIT'
+  | 'HOLD_UNBACKED'
+  | 'REDEMPTION_NOT_FOUND'
+  | 'REFUND_TOO_LARGE'
+  | 'NOT_REFUNDABLE'
+  | 'NOT_HELD'
   | 'TICKET_NOT_FOUND'
   | 'NOTIFICATION_NOT_FOUND'
   | 'EXPORT_NOT_FOUND'
@@ -97,6 +118,10 @@ export type ErrorCode =
   | 'WRONG_CARD_TYPE'
   | 'INSUFFICIENT_BALANCE'
   | 'REWARD_NOT_READY'
+  | 'OWNER_EMAIL_UNVERIFIED'
+  | 'SALE_NOT_FOUND'
+  | 'SALE_AMBIGUOUS'
+  | 'SALE_ALREADY_SPENT'
   | 'WRONG_LOCATION'
   | 'INVALID_PROMOTION'
   | 'PROMOTION_NOT_FOUND'
@@ -200,9 +225,11 @@ export interface IssuePassBody {
   email?: string;
   name?: string;
   homeLocationId?: string;
-  /** Hediye kartı tutarı, kuruş */
+  /** Hediye kartı tutarı, programın para biriminde, kuruş */
   faceMinor?: number;
   kvkkConsent?: boolean;
+  /** İsteğe bağlı: tutarın para birimi (ISO 4217, ör. `TRY`, `EUR`, büyük-küçük harf önemsiz). Tutar **kartın para birimindedir** (programın para birimi: `GET /v1/passes/{serial}` → `currency`, `GET /v1/programs/{id}`); verilirse onunla karşılaştırılır, farklıysa `422 CURRENCY_MISMATCH` (`details.currency` kartınki) ve hiçbir şey yazılmaz. Tutar çevrilmez. */
+  currency?: string;
   firstName?: string;
   lastName?: string;
   phone?: string;
@@ -212,12 +239,21 @@ export interface IssuePassBody {
   orderId?: string;
   /** Siparişin geldiği mağaza bağlantısı (`GET /v1/shops`). `orderId` ile birlikte. */
   shopId?: string;
+  /** Kişinin bu programda açık kartı varsa: `create` (varsayılan) yine yeni kart açar, `return` o kartı döndürür (`created: false`). `email` ister. */
+  ifExists?: 'create' | 'return';
+  /** true: kartın bağlantısı kişinin e-postasına gider (katılım formunun e-postası). `email` ister. */
+  sendEmail?: boolean;
 }
 
 /** The `data` of `issuePass`'s answer. */
 export interface IssuePassData {
   serial: string;
+  /** Yeni kartta müşterinin özel kart bağlantısı (`?k=…`): müşteriye iletin, kayıtlara yazmayın. Var olan kartta (`created: false`) görüntüleme anahtarı taşımayan adres. */
   cardUrl: string;
+  /** true: yeni kart açıldı · false: `ifExists: "return"` ile kişinin var olan kartı döndü */
+  created: boolean;
+  /** Yalnız `sendEmail: true` iken: e-postaya ne oldu (`queued`, `suppressed`, `rate_limited`, `not_sent`) */
+  emailStatus?: 'queued' | 'suppressed' | 'rate_limited' | 'not_sent';
   /** Yalnız `orderId` gönderildiyse: siparişin bu karta ne olduğu. */
   order?: {
     shopId: string;
@@ -268,11 +304,35 @@ export interface GetPassData {
   programId: string;
   type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
   status: string;
-  /** Damga, puan, ziyaret ya da kuruş (türüne göre). */
+  /** Programın adı (ADR 182) */
+  programName: string;
+  /** Kartın para birimi (ISO 4217, ör. `TRY`, `EUR`): programın para birimi — cashback ve hediye kartında programın kendi para birimi, öteki türlerde işletmeninki. Bu karttaki satışın ve işlemlerin `amountMinor`'ı bu birimdedir ve `currency` alanları bununla karşılaştırılır (ADR 182) */
+  currency: string;
+  /** Türe göre birimi değişir: damga kartında damga, puan kartında puan, VIP'te ziyaret, cashback ve hediye kartında kuruş (`money.currency` cinsinden); kupon ve indirim kartının bakiyesi yoktur (0). Yeni kodda türe özgü alanları okuyun: `stamps`, `points`, `money`. */
   balance: number | null;
+  /** Yalnız damga kartında: kartta şu an kaç damga var (`count`) ve bir ödül kaç damga ister (`max`). Hazır ödül sayısı `floor(count / max)`, sıradaki ödüle doğru damga `count % max`; program ödülden sonra damga biriktiriyorsa `count` `max`'ı aşabilir. */
+  stamps?: {
+    count: number;
+    max: number;
+  };
+  /** Yalnız puan kartında: puan bakiyesi */
+  points?: number;
+  /** Yalnız cashback ve hediye kartında: harcanabilir bakiye, kuruş, ve para birimi. Online bir siparişe ayrılan tutar düşülmüştür. */
+  money?: {
+    amountMinor: number;
+    currency: string;
+  };
+  /** Yalnız kimlik `customers.read` taşıyorsa (kartın programında): kartın müşterisi. null: kartın müşterisi yok, ya da müşteri kimliğin şube kapsamının dışında. Yetki yoksa alan gelmez. */
+  customer?: {
+    /** Müşterinin adı; adı verilmemişse null */
+    name: string | null;
+  } | null;
   progressLabel?: string | null;
+  /** Cüzdandaki ilerleme yazısı, gösterim içindir, ayrıştırmayın: damga kartında ödül hazır olana dek `"3 / 8"`, hazır olunca ödülün adı (`"Bedava kahve"`, birden çoksa `"2 × Bedava kahve"`); puanda bakiye; VIP'te seviye adı; cashback ve hediye kartında biçimlenmiş tutar (`"€2,25"`); kuponda teklif metni; indirimde `"%10"`. */
   progressValue?: string | null;
+  /** Damga: en az bir dolu kart · puan: bakiye en az bir ödüle yetiyor · VIP: bir seviyede · cashback ve hediye kartı: bakiye sıfırdan büyük (harcanacak bir şey var; bir "ödül" değil) · kupon ve indirim: her zaman true (kartın kendisi teklif). Kasada bir işlemin yapılıp yapılamayacağı için `actions[].ready` okuyun. */
   rewardReady: boolean;
+  /** Damga: hazır ödül sayısı · puan: bakiyenin yettiği ödül basamağı sayısı · VIP: seviyedeyse 1 · cashback ve hediye kartı: bakiye varsa 1 · kupon ve indirim: 0 */
   rewardsReady: number;
   tier?: string | null;
   /** VIP: bir sonraki seviye ve kalan ziyaret. */
@@ -280,6 +340,18 @@ export interface GetPassData {
   /** Puan: bir sonraki ödül ve kalan puan. */
   nextReward?: unknown;
   updatedAt: string;
+  /** Bu kartın türünün aldığı kasa işlemleri (`POST /v1/passes/{serial}/actions`) */
+  actions: {
+    action: 'earn-stamps' | 'redeem-stamps' | 'earn-points' | 'redeem-reward' | 'visit' | 'spend' | 'accrue' | 'use' | 'load' | 'spend-points';
+    /** İşleme özgü zorunlu alanlar; `action` ve `locationId` her işlemde gerekir */
+    needs: Array<'amountMinor' | 'points' | 'rewardIndex'>;
+    /** Kartın durumuna göre işlem şimdi yapılabilir mi (ör. damga ödülü hazır mı, bakiye var mı, kupon kullanılmamış mı). Şube kuralı burada değil: `GET /v1/passes/{serial}/till`; yetkiler de değil */
+    ready: boolean;
+  }[];
+  sale: {
+    /** Bir satışın (`POST /v1/passes/{serial}/sale`) bu türde yazdığı: damga, puan, ziyaret, cashback ya da hiçbir şey */
+    writes: 'stamps' | 'points' | 'visit' | 'cashback' | 'none';
+  };
 }
 
 /** Arguments of `getPass`. */
@@ -372,6 +444,8 @@ export interface PassActionBody {
   points?: number;
   amountMinor?: number;
   rewardIndex?: number;
+  /** İsteğe bağlı: tutarın para birimi (ISO 4217, ör. `TRY`, `EUR`, büyük-küçük harf önemsiz). Tutar **kartın para birimindedir** (programın para birimi: `GET /v1/passes/{serial}` → `currency`, `GET /v1/programs/{id}`); verilirse onunla karşılaştırılır, farklıysa `422 CURRENCY_MISMATCH` (`details.currency` kartınki) ve hiçbir şey yazılmaz. Tutar çevrilmez. */
+  currency?: string;
 }
 
 /** The `data` of `passAction`'s answer. */
@@ -400,6 +474,132 @@ export interface PassActionArgs extends RequestOptions {
    * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// recordSale · POST /v1/passes/{serial}/sale
+
+/** Path parameters of `recordSale`. */
+export interface RecordSaleParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Header parameters of `recordSale`, as sent on the wire. */
+export interface RecordSaleHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key': string;
+}
+
+/** Request body of `recordSale`. */
+export interface RecordSaleBody {
+  /** Satışın yapıldığı şube. Verilmezse (online) satış bir şubeye yazılmaz; kimliğin her şubede `scan.use` yetkisi olmalıdır. */
+  locationId?: string;
+  /** Ödenen toplam, kartın (programın) para biriminde, kuruş */
+  amountMinor: number;
+  /** Fiş ya da sipariş numarası; defter kaydının notuna yazılır */
+  reference?: string;
+  /** İsteğe bağlı: tutarın para birimi (ISO 4217, ör. `TRY`, `EUR`, büyük-küçük harf önemsiz). Tutar **kartın para birimindedir** (programın para birimi: `GET /v1/passes/{serial}` → `currency`, `GET /v1/programs/{id}`); verilirse onunla karşılaştırılır, farklıysa `422 CURRENCY_MISMATCH` (`details.currency` kartınki) ve hiçbir şey yazılmaz. Tutar çevrilmez. */
+  currency?: string;
+}
+
+/** The `data` of `recordSale`'s answer. */
+export interface RecordSaleData {
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  applied: 'stamps' | 'points' | 'visit' | 'cashback' | 'none';
+  /** Yazılan: damga, puan, ziyaret ya da kuruş; hiçbir şey yazılmadıysa 0. Tekrarda ilk isteğin yazdığı */
+  credited: number;
+  /** Yalnız `applied: "none"` iken: neden hiçbir şey yazılmadı */
+  reason?: 'below_minimum' | 'visit_already_counted' | 'card_full' | 'type_does_not_earn';
+  /** Satıştan sonra kartın bakiyesi (damga, puan, ziyaret ya da kuruş); kupon ve indirimde null */
+  balance: number | null;
+  duplicate: boolean;
+  /** Damga: ödül hazır oldu · VIP: seviye */
+  detail?: string;
+  /** Bu kazanımı katlayan kasa kampanyası (ADR 139) */
+  promotion?: {
+    id: string;
+    name: string;
+    factor: number;
+  };
+  rewardReady: boolean;
+  rewardsReady: number;
+}
+
+/** Arguments of `recordSale`. */
+export interface RecordSaleArgs extends RequestOptions {
+  /** Path parameters. */
+  params: RecordSaleParams;
+  /** The JSON body. */
+  body: RecordSaleBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// reverseSale · POST /v1/passes/{serial}/sale/reverse
+
+/** Path parameters of `reverseSale`. */
+export interface ReverseSaleParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Header parameters of `reverseSale`, as sent on the wire. */
+export interface ReverseSaleHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `reverseSale`. */
+export interface ReverseSaleBody {
+  /** Satışın `Idempotency-Key`'i (aynı kimlikle gönderilmiş) */
+  saleKey?: string;
+  /** Satışın `reference`'ı; bu kartta tek bir satışta olmalı */
+  reference?: string;
+  /** Geri almanın yapıldığı şube (isteğe bağlı) */
+  locationId?: string;
+}
+
+/** The `data` of `reverseSale`'s answer. */
+export interface ReverseSaleData {
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  /** Geri alınan satışın yazdığı */
+  applied: 'stamps' | 'points' | 'visit' | 'cashback';
+  /** Geri alınan: satışın yazdığı damga, puan, ziyaret ya da kuruş */
+  reversed: number;
+  /** Geri almadan sonra kartın bakiyesi */
+  balance: number;
+  /** true: satış daha önce geri alınmıştı; şimdi hiçbir şey yazılmadı */
+  duplicate: boolean;
+  rewardReady: boolean;
+  rewardsReady: number;
+}
+
+/** Arguments of `reverseSale`. */
+export interface ReverseSaleArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ReverseSaleParams;
+  /** The JSON body. */
+  body?: ReverseSaleBody;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -639,6 +839,33 @@ export interface EmailCardLinkArgs extends RequestOptions {
 }
 
 // ----------------------------------------------------------------------
+// getMeta · GET /v1/meta
+
+/** Header parameters of `getMeta`, as sent on the wire. */
+export interface GetMetaHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** The `data` of `getMeta`'s answer. */
+export interface GetMetaData {
+  /** Rewloy'nun sürümü (package.json), ör. `1.0.0` */
+  version: string;
+  /** Bu API'nin sürümü */
+  apiVersion: 'v1';
+}
+
+/** Arguments of `getMeta`. */
+export interface GetMetaArgs extends RequestOptions {
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
 // openapi · GET /v1/openapi.json
 
 /** Arguments of `openapi`. */
@@ -675,6 +902,8 @@ export interface LoginData {
     mode: 'live' | 'test';
     /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
     testOf: string | null;
+    /** İşletmenin para birimi (ISO 4217): satışların `amountMinor`'ı ve para kartlarının tutarları bu birimdedir (ADR 182) */
+    currency: string;
   }[];
 }
 
@@ -768,6 +997,8 @@ export type MeData = {
     mode: 'live' | 'test';
     /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
     testOf: string | null;
+    /** İşletmenin para birimi (ISO 4217): satışların `amountMinor`'ı ve para kartlarının tutarları bu birimdedir (ADR 182) */
+    currency: string;
   }[];
   activeMerchantId: string | null;
   mode: 'live' | 'test' | null;
@@ -783,10 +1014,18 @@ export type MeData = {
     rateLimitPerMinute: number;
     /** Bağlantı koduyla kurulmuş bir mağaza eklentisinin anahtarıysa ait olduğu mağaza bağlantısı (yalnız onu görür ve yönetir); değilse null. */
     shopId: string | null;
+    /** Bir eklentinin ekranlarını açıp kapatmak için, yetkilerden okunur (ADR 178): `view` = `passes.read` ve `analytics.read` (kart durumu, programın sayıları ve son işlemleri; müşterinin kişisel bilgisi yok); `till` = `scan.use` tam olarak bir şubede (o şubenin kasası: `getPassTill`, `recordSale`, `passAction`). Birden çok şubede ya da her yerde `scan.use` taşıyan anahtarın tek bir kasası olmadığından `till` yazılmaz. */
+    abilities: Array<'view' | 'till'>;
+    /** `till` varken kasanın şubesi (işlemlerde `locationId` olarak gönderilir); yoksa null. */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; yoksa null. */
+    tillLocationName: string | null;
   };
   business: {
     id: string;
     name: string;
+    /** İşletmenin para birimi (ISO 4217, ör. `TRY`, `EUR`): satışların `amountMinor`'ı ve para kartlarının tutarları bu birimdedir. Varsayılan `TRY`; para kartı verilene dek `PATCH /v1/business` ile değişir (ADR 182) */
+    currency: string;
   };
   permissions: string[];
   mode: 'live' | 'test';
@@ -804,6 +1043,12 @@ export interface MeArgs extends RequestOptions {
 
 // ----------------------------------------------------------------------
 // holderLogin · POST /v1/holder/login
+
+/** Header parameters of `holderLogin`, as sent on the wire. */
+export interface HolderLoginHeaders {
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key'?: string;
+}
 
 /** Request body of `holderLogin`. */
 export interface HolderLoginBody {
@@ -831,6 +1076,12 @@ export interface HolderLoginData {
 export interface HolderLoginArgs extends RequestOptions {
   /** The JSON body. */
   body?: HolderLoginBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -1049,6 +1300,8 @@ export interface SignupData {
     mode: 'live' | 'test';
     /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
     testOf: string | null;
+    /** İşletmenin para birimi (ISO 4217): satışların `amountMinor`'ı ve para kartlarının tutarları bu birimdedir (ADR 182) */
+    currency: string;
   }[];
   merchantId: string;
   termsVersion: string;
@@ -1156,7 +1409,6 @@ export interface InvitePreviewParams {
 export interface InvitePreviewData {
   merchantName: string;
   email: string;
-  userExists: boolean;
 }
 
 /** Arguments of `invitePreview`. */
@@ -1173,9 +1425,16 @@ export interface AcceptInviteParams {
   code: string;
 }
 
+/** Header parameters of `acceptInvite`, as sent on the wire. */
+export interface AcceptInviteHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
 /** Request body of `acceptInvite`. */
 export interface AcceptInviteBody {
-  password: string;
+  /** Yalnız yeni hesap için: hesabın şifresi (en az 10 karakter) */
+  password?: string;
 }
 
 /** The `data` of `acceptInvite`'s answer. */
@@ -1200,6 +1459,8 @@ export interface AcceptInviteData {
     mode: 'live' | 'test';
     /** Test ortamında, ait olduğu gerçek işletme; gerçek işletmede `null` */
     testOf: string | null;
+    /** İşletmenin para birimi (ISO 4217): satışların `amountMinor`'ı ve para kartlarının tutarları bu birimdedir (ADR 182) */
+    currency: string;
   }[];
 }
 
@@ -1208,7 +1469,13 @@ export interface AcceptInviteArgs extends RequestOptions {
   /** Path parameters. */
   params: AcceptInviteParams;
   /** The JSON body. */
-  body: AcceptInviteBody;
+  body?: AcceptInviteBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -1695,6 +1962,17 @@ export interface ListProgramsItem {
     visits30: number;
     rewardsReady: number;
   };
+  /** Bir satışın bu programda ne kazandırdığı, kaydedilmiş kurallardan (salt-okunur). Kasa kampanyaları buna dahil değil. */
+  sale: {
+    /** Bir satışın (`POST /v1/passes/{serial}/sale`) bu programın kartlarına yazdığı */
+    writes: 'stamps' | 'points' | 'visit' | 'cashback' | 'none';
+    /** Damga ve VIP: satış başına damga ya da ziyaret */
+    perSale: number | null;
+    /** Puan: her 1 birim harcamaya puan (`config.earnRate`) */
+    pointsPerUnit: number | null;
+    /** Cashback: toplamın yüzdesi (`config.cashbackRate`) */
+    percent: number | null;
+  };
 }
 
 /** The `data` of `listPrograms`'s answer. */
@@ -1820,6 +2098,12 @@ export interface CreateProgramBody {
   cashbackRate?: number;
   /** Kupon: teklif metni */
   offerText?: string;
+  /** Kupon: online mağazada kullanıldığında değeri (ADR 179). Yoksa (ya da null) kupon yalnız mağazada geçer; kodun kendi online değeri ya da tutarı bunun önüne geçer. */
+  onlineValue?: {
+    kind: 'amount' | 'percent';
+    /** amount: kuruş (100 – 10.000.000); percent: 1 – 100 */
+    value: number;
+  } | null;
 }
 
 /** The `data` of `createProgram`'s answer. */
@@ -1843,6 +2127,17 @@ export interface CreateProgramData {
     activeCards: number;
     visits30: number;
     rewardsReady: number;
+  };
+  /** Bir satışın bu programda ne kazandırdığı, kaydedilmiş kurallardan (salt-okunur). Kasa kampanyaları buna dahil değil. */
+  sale: {
+    /** Bir satışın (`POST /v1/passes/{serial}/sale`) bu programın kartlarına yazdığı */
+    writes: 'stamps' | 'points' | 'visit' | 'cashback' | 'none';
+    /** Damga ve VIP: satış başına damga ya da ziyaret */
+    perSale: number | null;
+    /** Puan: her 1 birim harcamaya puan (`config.earnRate`) */
+    pointsPerUnit: number | null;
+    /** Cashback: toplamın yüzdesi (`config.cashbackRate`) */
+    percent: number | null;
   };
 }
 
@@ -1955,6 +2250,17 @@ export interface GetProgramData {
     activeCards: number;
     visits30: number;
     rewardsReady: number;
+  };
+  /** Bir satışın bu programda ne kazandırdığı, kaydedilmiş kurallardan (salt-okunur). Kasa kampanyaları buna dahil değil. */
+  sale: {
+    /** Bir satışın (`POST /v1/passes/{serial}/sale`) bu programın kartlarına yazdığı */
+    writes: 'stamps' | 'points' | 'visit' | 'cashback' | 'none';
+    /** Damga ve VIP: satış başına damga ya da ziyaret */
+    perSale: number | null;
+    /** Puan: her 1 birim harcamaya puan (`config.earnRate`) */
+    pointsPerUnit: number | null;
+    /** Cashback: toplamın yüzdesi (`config.cashbackRate`) */
+    percent: number | null;
   };
 }
 
@@ -2076,6 +2382,12 @@ export interface UpdateProgramBody {
   cashbackRate?: number;
   /** Kupon: teklif metni */
   offerText?: string;
+  /** Kupon: online mağazada kullanıldığında değeri (ADR 179). Yoksa (ya da null) kupon yalnız mağazada geçer; kodun kendi online değeri ya da tutarı bunun önüne geçer. */
+  onlineValue?: {
+    kind: 'amount' | 'percent';
+    /** amount: kuruş (100 – 10.000.000); percent: 1 – 100 */
+    value: number;
+  } | null;
 }
 
 /** The `data` of `updateProgram`'s answer. */
@@ -2099,6 +2411,17 @@ export interface UpdateProgramData {
     activeCards: number;
     visits30: number;
     rewardsReady: number;
+  };
+  /** Bir satışın bu programda ne kazandırdığı, kaydedilmiş kurallardan (salt-okunur). Kasa kampanyaları buna dahil değil. */
+  sale: {
+    /** Bir satışın (`POST /v1/passes/{serial}/sale`) bu programın kartlarına yazdığı */
+    writes: 'stamps' | 'points' | 'visit' | 'cashback' | 'none';
+    /** Damga ve VIP: satış başına damga ya da ziyaret */
+    perSale: number | null;
+    /** Puan: her 1 birim harcamaya puan (`config.earnRate`) */
+    pointsPerUnit: number | null;
+    /** Cashback: toplamın yüzdesi (`config.cashbackRate`) */
+    percent: number | null;
   };
 }
 
@@ -2255,6 +2578,12 @@ export interface PreviewProgramBody {
     cashbackRate?: number;
     /** Kupon: teklif metni */
     offerText?: string;
+    /** Kupon: online mağazada kullanıldığında değeri (ADR 179). Yoksa (ya da null) kupon yalnız mağazada geçer; kodun kendi online değeri ya da tutarı bunun önüne geçer. */
+    onlineValue?: {
+      kind: 'amount' | 'percent';
+      /** amount: kuruş (100 – 10.000.000); percent: 1 – 100 */
+      value: number;
+    } | null;
   };
   programId?: string;
   stage?: 'new' | 'mid' | 'ready';
@@ -2735,6 +3064,8 @@ export interface ListCustomerCardsItem {
     /** Numaranın bu işletmede bir katılımla doğrulandığı an. Adreste her zaman null: adres başka bir işletmede ya da bir Rewloy Cüzdan girişinde doğrulanmış olabilir; yalnız doğrulandığı (`verified`) söylenir. Doğrulanmadıysa null */
     verifiedAt: string | null;
   }[];
+  /** `q` bir kart numarası olarak okundu ve bu kartın numarası onunla başlıyor: aranan kart bu (kişinin öteki kartları false) */
+  matched: boolean;
 }
 
 /** Arguments of `listCustomerCards`. */
@@ -2882,7 +3213,7 @@ export interface CustomerTimelineHeaders {
 /** One item of `customerTimeline`'s list. */
 export interface CustomerTimelineItem {
   at: string;
-  /** earn, redeem, spend, load, …; visit; campaign, automation:<tür>, sequence; issued; verified:phone; changed:email, changed:phone */
+  /** earn, redeem, spend, load, …; hold, release, refund (online ödeme kodu, ADR 179); visit; campaign, automation:<tür>, sequence; issued; verified:phone; changed:email, changed:phone */
   kind: string;
   group: 'points' | 'rewards' | 'spend' | 'visits' | 'messages' | 'cards' | 'contact';
   /** Defter değişimi (damga, puan ya da kuruş) */
@@ -3363,7 +3694,10 @@ export interface CreateBatchHeaders {
 export interface CreateBatchBody {
   /** Kodun adı (boşsa programın adı) */
   name?: string;
+  /** Programın para biriminde, kuruş */
   valueMinor?: number;
+  /** İsteğe bağlı: tutarın para birimi (ISO 4217, ör. `TRY`, `EUR`, büyük-küçük harf önemsiz). Tutar **kartın para birimindedir** (programın para birimi: `GET /v1/passes/{serial}` → `currency`, `GET /v1/programs/{id}`); verilirse onunla karşılaştırılır, farklıysa `422 CURRENCY_MISMATCH` (`details.currency` kartınki) ve hiçbir şey yazılmaz. Tutar çevrilmez. */
+  currency?: string;
   usage?: 'once' | 'limited' | 'unlimited';
   usageLimit?: number;
   capacity?: number;
@@ -3372,6 +3706,10 @@ export interface CreateBatchBody {
   validUntil?: string;
   offerText?: string;
   percent?: number;
+  onlineValue?: {
+    kind: 'amount' | 'percent';
+    value: number;
+  };
   /** Kartların kasada kabul edileceği şubeler (ADR 139); boş ya da yok = programın kuralı. Şube kapsamlı bir kimlik yalnız kendi şubelerini seçebilir. */
   locationIds?: string[];
 }
@@ -3418,6 +3756,11 @@ export interface CreateBatchData {
   spentMinor: number;
   /** Hediye kartı: açık kartlarda kalan (defter bakiyeleri), kuruş */
   outstandingMinor: number;
+  /** Kupon: online mağazada kullanıldığındaki değeri (ADR 179); null = kodun tutarı, yoksa programın `onlineValue`'su, o da yoksa yalnız mağazada */
+  onlineValue: {
+    kind: 'amount' | 'percent';
+    value: number;
+  } | null;
 }
 
 /** Arguments of `createBatch`. */
@@ -3490,6 +3833,11 @@ export interface GetBatchData {
   spentMinor: number;
   /** Hediye kartı: açık kartlarda kalan (defter bakiyeleri), kuruş */
   outstandingMinor: number;
+  /** Kupon: online mağazada kullanıldığındaki değeri (ADR 179); null = kodun tutarı, yoksa programın `onlineValue`'su, o da yoksa yalnız mağazada */
+  onlineValue: {
+    kind: 'amount' | 'percent';
+    value: number;
+  } | null;
 }
 
 /** Arguments of `getBatch`. */
@@ -3530,7 +3878,7 @@ export interface ListBatchCardsItem {
   passId: string;
   serial: string;
   name: string;
-  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. Kartı alanın adresi. Yerine geçen `identifiers` yalnız `customers.read` yetkisiyle gelir. */
+  /** **Kullanımdan kalkıyor:** 5 Nisan 2027 tarihine kadar gelir; yerine `identifiers`. Kartı alanın adresi; `identifiers` gibi yalnız `customers.read` yetkisiyle ve kimliğin şube kapsamındaki kişiler için gelir, yoksa null (ADR 181). Yerine geçen `identifiers`. */
   email: string | null;
   /** Kişinin bu işletmedeki adresleri ve numaraları, durumlarıyla: önce adresler, sonra numaralar. Yalnız bu işletmenin kaydı; kişinin Rewloy Cüzdan hesabı ya da başka işletmeleri hiçbir zaman (ADR 168). Yalnız `customers.read` yetkisiyle, kimliğin şube kapsamındaki kişiler için gelir */
   identifiers?: {
@@ -3656,6 +4004,11 @@ export interface CloseBatchData {
   spentMinor: number;
   /** Hediye kartı: açık kartlarda kalan (defter bakiyeleri), kuruş */
   outstandingMinor: number;
+  /** Kupon: online mağazada kullanıldığındaki değeri (ADR 179); null = kodun tutarı, yoksa programın `onlineValue`'su, o da yoksa yalnız mağazada */
+  onlineValue: {
+    kind: 'amount' | 'percent';
+    value: number;
+  } | null;
 }
 
 /** Arguments of `closeBatch`. */
@@ -6069,6 +6422,8 @@ export interface GetAnalyticsQuery {
   days?: 7 | 30 | 90;
   /** Tek bir şube (kapsamınız içinde) */
   locationId?: string;
+  /** Tek bir program (kapsamınız içinde). Kapsamı programlarla sınırlı bir kimlik (ör. mağaza eklentisinin anahtarı) yalnız kendi programlarını görür; programsız istekte de yalnız onlar sayılır. */
+  programId?: string;
 }
 
 /** Header parameters of `getAnalytics`, as sent on the wire. */
@@ -6157,7 +6512,8 @@ export interface ListActivityQuery {
   seatId?: string;
   /** YYYY-AA-GG */
   day?: string;
-  kind?: 'earn' | 'redeem' | 'spend' | 'load' | 'accrue' | 'visit' | 'use' | 'issue' | 'adjust' | 'expire';
+  kind?: 'earn' | 'redeem' | 'spend' | 'load' | 'accrue' | 'visit' | 'use' | 'issue' | 'adjust' | 'expire' | 'hold' | 'release' | 'refund';
+  /** Tek bir program (kapsamınız içinde). Kapsamı programlarla sınırlı bir kimlik (ör. mağaza eklentisinin anahtarı) yalnız kendi programlarını görür; programsız istekte de yalnız onlar sayılır. */
   programId?: string;
   /** Kart numarası ya da başı */
   serial?: string;
@@ -6176,7 +6532,9 @@ export interface ListActivityItem {
   at: string;
   kind: string;
   delta: number | null;
+  /** `delta`'nın birimi: `stamp` damga, `point` puan, `visit` ziyaret, `try_minor` para (kuruş). `try_minor` donmuş bir addır: Türk lirası demek değildir, `currency` biriminin kuruşudur (ör. EUR işletmede euro sent). Kupon ve indirim kullanımında null. */
   unit: string | null;
+  /** Para hareketinde `delta`'nın para birimi (programın, yoksa işletmenin; ISO 4217). Damga, puan ve ziyarette de gelir ama yalnız `unit: "try_minor"` iken anlamlıdır; kupon ve indirim kullanımında null. */
   currency: string | null;
   serial: string;
   personId: string | null;
@@ -7135,19 +7493,60 @@ export interface ListShopsItem {
   /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
   lastDelivery: {
     at: string;
-    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
   } | null;
   /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
   lastRefusal: {
     at: string;
     reason: 'bad_signature';
   } | null;
-  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
   pluginKey: {
     id: string;
     prefix: string;
     name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
   } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
 }
 
 /** The `data` of `listShops`'s answer. */
@@ -7211,19 +7610,60 @@ export interface CreateShopData {
   /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
   lastDelivery: {
     at: string;
-    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
   } | null;
   /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
   lastRefusal: {
     at: string;
     reason: 'bad_signature';
   } | null;
-  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
   pluginKey: {
     id: string;
     prefix: string;
     name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
   } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
   /** WooCommerce: yalnız bu yanıtta; saklanmaz, yeniden gösterilmez */
   secret: string | null;
 }
@@ -7283,19 +7723,60 @@ export interface GetShopData {
   /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
   lastDelivery: {
     at: string;
-    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
   } | null;
   /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
   lastRefusal: {
     at: string;
     reason: 'bad_signature';
   } | null;
-  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
   pluginKey: {
     id: string;
     prefix: string;
     name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
   } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
 }
 
 /** Arguments of `getShop`. */
@@ -7358,19 +7839,60 @@ export interface SetShopEnabledData {
   /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
   lastDelivery: {
     at: string;
-    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
   } | null;
   /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
   lastRefusal: {
     at: string;
     reason: 'bad_signature';
   } | null;
-  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
   pluginKey: {
     id: string;
     prefix: string;
     name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
   } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
 }
 
 /** Arguments of `setShopEnabled`. */
@@ -7476,6 +7998,12 @@ export interface ListShopConnectTokensItem {
   expiresAt: string;
   /** Kodu oluşturan kişinin e-postası */
   createdBy: string | null;
+  /** Kurulacak anahtar Görüntüleme yetkisini alır mı (ADR 178) */
+  view: boolean;
+  /** Kurulacak anahtarın kasası bu şubede açılır; null = kasa kapalı (ADR 178) */
+  tillLocationId: string | null;
+  /** Kasanın şubesinin adı */
+  tillLocationName: string | null;
 }
 
 /** The `data` of `listShopConnectTokens`'s answer. */
@@ -7507,6 +8035,10 @@ export interface CreateShopConnectTokenBody {
   perAmountMinor?: number;
   step?: number;
   password: string;
+  /** Görüntüleme: kartlar, durumları, programın sayıları ve son işlemleri. Gönderilmezse kapalı (ADR 178'in incelemesi): eski istemcinin anahtarı eskisi gibi kalır */
+  view?: boolean;
+  /** Kasa: bu şubenin kasası; gönderilmezse ya da null ise kasa kapalı */
+  tillLocationId?: string | null;
 }
 
 /** The `data` of `createShopConnectToken`'s answer. */
@@ -7521,6 +8053,12 @@ export interface CreateShopConnectTokenData {
   expiresAt: string;
   /** Kodu oluşturan kişinin e-postası */
   createdBy: string | null;
+  /** Kurulacak anahtar Görüntüleme yetkisini alır mı (ADR 178) */
+  view: boolean;
+  /** Kurulacak anahtarın kasası bu şubede açılır; null = kasa kapalı (ADR 178) */
+  tillLocationId: string | null;
+  /** Kasanın şubesinin adı */
+  tillLocationName: string | null;
   /** Eklentiye yapıştırılacak kod: yalnız bu yanıtta; saklanmaz, yeniden gösterilmez. */
   token: string;
 }
@@ -7602,19 +8140,60 @@ export interface ConnectShopData {
     /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
     lastDelivery: {
       at: string;
-      result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body';
+      result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
     } | null;
     /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
     lastRefusal: {
       at: string;
       reason: 'bad_signature';
     } | null;
-    /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı; yoksa null. Bağlantı silinince anahtar da iptal edilir. */
+    /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
     pluginKey: {
       id: string;
       prefix: string;
       name: string;
+      /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+      abilities: Array<'view' | 'till'>;
+      /** Kasa açıksa şubesi; değilse null */
+      tillLocationId: string | null;
+      /** Kasanın şubesinin adı; değilse null */
+      tillLocationName: string | null;
+      /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+      tillArchived: boolean;
     } | null;
+    /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+    shopName: string | null;
+    /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+    settings: {
+      /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+      tax: {
+        /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+        giftcard: 'payment' | 'discount';
+        /** Cashback: `discount` (varsayılan) ya da `payment` */
+        cashback: 'payment' | 'discount';
+        /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+        voucher: 'payment' | 'discount';
+      };
+      /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+      refundReverses: 'code_orders' | 'all' | 'never';
+      /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+      holdDays: number;
+    };
+    accepts: {
+      /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+      programIds: string[];
+      /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+      ceiling: {
+        id: string;
+        name: string;
+        type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+      }[] | null;
+    };
+    /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+    unbacked: {
+      count: number;
+      lastAt: string | null;
+    };
   };
   /** Bağlantının gizli anahtarı: WooCommerce webhook'unun "Gizli anahtar"ı. Yalnız bu yanıtta; yeniden gösterilmez. */
   secret: string;
@@ -7625,6 +8204,10 @@ export interface ConnectShopData {
     role: string;
     /** `rwk_…` (test ortamında `rwk_test_…`): yalnız bu yanıtta; Rewloy yalnız özetini saklar. */
     token: string;
+    /** Kodu alan kişinin seçtiği yetkiler (ADR 178): `view`, `till` */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi (işlemlerde `locationId`); değilse null */
+    tillLocationId: string | null;
   };
   mode: 'live' | 'test';
 }
@@ -7633,6 +8216,1169 @@ export interface ConnectShopData {
 export interface ConnectShopArgs extends RequestOptions {
   /** The JSON body. */
   body: ConnectShopBody;
+}
+
+// ----------------------------------------------------------------------
+// setShopPluginAbilities · PUT /v1/shops/{id}/plugin-abilities
+
+/** Path parameters of `setShopPluginAbilities`. */
+export interface SetShopPluginAbilitiesParams {
+  id: string;
+}
+
+/** Header parameters of `setShopPluginAbilities`, as sent on the wire. */
+export interface SetShopPluginAbilitiesHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `setShopPluginAbilities`. */
+export interface SetShopPluginAbilitiesBody {
+  view: boolean;
+  /** Kasanın şubesi; null = kasa kapalı */
+  tillLocationId: string | null;
+  /** Neden (yalnız ekibiniz görür) */
+  reason: string;
+  password: string;
+}
+
+/** The `data` of `setShopPluginAbilities`'s answer. */
+export interface SetShopPluginAbilitiesData {
+  id: string;
+  platform: 'shopify' | 'woocommerce';
+  programId: string;
+  programName: string;
+  programType: string;
+  currency: string;
+  /** order: her sipariş · amount: her `perAmountMinor` tutar için */
+  rule: 'order' | 'amount';
+  perAmountMinor: number;
+  /** Her seferinde eklenen damga/puan/ziyaret (cashback kartında tutar oranla hesaplanır) */
+  step: number;
+  enabled: boolean;
+  lastOrderAt: string | null;
+  createdAt: string;
+  /** Mağazanızın sipariş bildirimini göndereceği adres */
+  webhookUrl: string;
+  /** Kayıtlı siparişler sonucuna göre: credited işlendi · unmatched e-postası müşteriyle eşleşmedi · below eşiğin altında · paused bağlantı kapalıyken · currency para birimi farklı */
+  orders: {
+    credited: number;
+    unmatched: number;
+    below: number;
+    paused: number;
+    currency: number;
+  };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
+  } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
+}
+
+/** Arguments of `setShopPluginAbilities`. */
+export interface SetShopPluginAbilitiesArgs extends RequestOptions {
+  /** Path parameters. */
+  params: SetShopPluginAbilitiesParams;
+  /** The JSON body. */
+  body: SetShopPluginAbilitiesBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// quoteCheckoutCode · POST /v1/shops/{id}/checkout-codes/quote
+
+/** Path parameters of `quoteCheckoutCode`. */
+export interface QuoteCheckoutCodeParams {
+  id: string;
+}
+
+/** Header parameters of `quoteCheckoutCode`, as sent on the wire. */
+export interface QuoteCheckoutCodeHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `quoteCheckoutCode`. */
+export interface QuoteCheckoutCodeBody {
+  /** Müşterinin yazdığı kod: `RW-XXXX-XXXX` (büyük/küçük harf, boşluk ve tire fark etmez) */
+  code: string;
+  /** Siparişin para birimi (ISO 4217, örn. TRY) */
+  currency: string;
+  /** İsteğe bağlı: alışverişçinin kişisel veri taşımayan anahtarı (ör. WooCommerce oturumunun HMAC'i); kendi soru bütçesi olur */
+  shopper?: string;
+  /** İsteğe bağlı: kodu soran sipariş. Kod bu siparişteyse `CODE_USED` yerine bu siparişin kullanımı döner (ADR 180). */
+  orderId?: string;
+}
+
+/** The `data` of `quoteCheckoutCode`'s answer. */
+export interface QuoteCheckoutCodeData {
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  currency: string;
+  maxMinor: number | null;
+  percent: number | null;
+  amountMinor: number | null;
+  tax: 'payment' | 'discount' | null;
+  cardId: string;
+  cardLast4: string;
+  codeLast4: string;
+  firstUseBy: string;
+  /** Kodun bir siparişe bağlanabileceği son an */
+  attachBy: string;
+  /** Yalnız `orderId` gönderildiyse: bu siparişin bu koddaki kullanımı; kod bu siparişin değilse null */
+  redemption?: {
+    id: string;
+    orderId: string;
+    /** Kodun son 4 karakteri (sipariş notu için) */
+    codeLast4: string;
+    /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+    cardId: string | null;
+    /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+    cardLast4: string;
+    /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+    kind: 'balance' | 'percent' | 'amount' | 'link';
+    type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    programId: string;
+    programName: string;
+    /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+    amountMinor: number;
+    percent: number | null;
+    currency: string;
+    /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+    state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+    /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+    generation: number;
+    /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+    heldUntil: string | null;
+    capturedMinor: number;
+    refundedMinor: number;
+    /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+    late: boolean;
+    releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+    createdAt: string;
+    capturedAt: string | null;
+    releasedAt: string | null;
+  } | null;
+}
+
+/** Arguments of `quoteCheckoutCode`. */
+export interface QuoteCheckoutCodeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: QuoteCheckoutCodeParams;
+  /** The JSON body. */
+  body: QuoteCheckoutCodeBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listOrderRedemptions · GET /v1/shops/{id}/orders/{orderId}/redemptions
+
+/** Path parameters of `listOrderRedemptions`. */
+export interface ListOrderRedemptionsParams {
+  id: string;
+  /** Mağazanın sipariş numarası (WooCommerce: sipariş kimliği) */
+  orderId: string;
+}
+
+/** Header parameters of `listOrderRedemptions`, as sent on the wire. */
+export interface ListOrderRedemptionsHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listOrderRedemptions`'s list. */
+export interface ListOrderRedemptionsItem {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** The `data` of `listOrderRedemptions`'s answer. */
+export type ListOrderRedemptionsData = ListOrderRedemptionsItem[];
+
+/** Arguments of `listOrderRedemptions`. */
+export interface ListOrderRedemptionsArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ListOrderRedemptionsParams;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// holdCheckoutCode · POST /v1/shops/{id}/orders/{orderId}/redemptions
+
+/** Path parameters of `holdCheckoutCode`. */
+export interface HoldCheckoutCodeParams {
+  id: string;
+  /** Mağazanın sipariş numarası (WooCommerce: sipariş kimliği) */
+  orderId: string;
+}
+
+/** Header parameters of `holdCheckoutCode`, as sent on the wire. */
+export interface HoldCheckoutCodeHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `holdCheckoutCode`. */
+export interface HoldCheckoutCodeBody {
+  /** Müşterinin yazdığı kod: `RW-XXXX-XXXX` (büyük/küçük harf, boşluk ve tire fark etmez) */
+  code: string;
+  /** Siparişin para birimi (ISO 4217, örn. TRY) */
+  currency: string;
+  amountMinor?: number;
+  /** Siparişin indirimden önceki toplamı (kuruş); verilirse amountMinor onu aşamaz */
+  orderTotalMinor?: number;
+}
+
+/** The `data` of `holdCheckoutCode`'s answer. */
+export interface HoldCheckoutCodeData {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** Arguments of `holdCheckoutCode`. */
+export interface HoldCheckoutCodeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: HoldCheckoutCodeParams;
+  /** The JSON body. */
+  body: HoldCheckoutCodeBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// captureCheckoutOrder · POST /v1/shops/{id}/orders/{orderId}/capture
+
+/** Path parameters of `captureCheckoutOrder`. */
+export interface CaptureCheckoutOrderParams {
+  id: string;
+  /** Mağazanın sipariş numarası (WooCommerce: sipariş kimliği) */
+  orderId: string;
+}
+
+/** Header parameters of `captureCheckoutOrder`, as sent on the wire. */
+export interface CaptureCheckoutOrderHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `captureCheckoutOrder`. */
+export interface CaptureCheckoutOrderBody {
+  captures?: {
+    id: string;
+    amountMinor: number;
+  }[];
+}
+
+/** One item of `captureCheckoutOrder`'s list. */
+export interface CaptureCheckoutOrderItem {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** The `data` of `captureCheckoutOrder`'s answer. */
+export type CaptureCheckoutOrderData = CaptureCheckoutOrderItem[];
+
+/** Arguments of `captureCheckoutOrder`. */
+export interface CaptureCheckoutOrderArgs extends RequestOptions {
+  /** Path parameters. */
+  params: CaptureCheckoutOrderParams;
+  /** The JSON body. */
+  body?: CaptureCheckoutOrderBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// releaseCheckoutOrder · POST /v1/shops/{id}/orders/{orderId}/release
+
+/** Path parameters of `releaseCheckoutOrder`. */
+export interface ReleaseCheckoutOrderParams {
+  id: string;
+  /** Mağazanın sipariş numarası (WooCommerce: sipariş kimliği) */
+  orderId: string;
+}
+
+/** Header parameters of `releaseCheckoutOrder`, as sent on the wire. */
+export interface ReleaseCheckoutOrderHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `releaseCheckoutOrder`. */
+export interface ReleaseCheckoutOrderBody {
+  reason?: 'cancelled' | 'failed' | 'shop';
+}
+
+/** One item of `releaseCheckoutOrder`'s list. */
+export interface ReleaseCheckoutOrderItem {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** The `data` of `releaseCheckoutOrder`'s answer. */
+export type ReleaseCheckoutOrderData = ReleaseCheckoutOrderItem[];
+
+/** Arguments of `releaseCheckoutOrder`. */
+export interface ReleaseCheckoutOrderArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ReleaseCheckoutOrderParams;
+  /** The JSON body. */
+  body?: ReleaseCheckoutOrderBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// refundCheckoutOrder · POST /v1/shops/{id}/orders/{orderId}/refund
+
+/** Path parameters of `refundCheckoutOrder`. */
+export interface RefundCheckoutOrderParams {
+  id: string;
+  /** Mağazanın sipariş numarası (WooCommerce: sipariş kimliği) */
+  orderId: string;
+}
+
+/** Header parameters of `refundCheckoutOrder`, as sent on the wire. */
+export interface RefundCheckoutOrderHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `refundCheckoutOrder`. */
+export interface RefundCheckoutOrderBody {
+  amountMinor?: number;
+  redemptionId?: string;
+}
+
+/** The `data` of `refundCheckoutOrder`'s answer. */
+export interface RefundCheckoutOrderData {
+  redemptions: {
+    id: string;
+    orderId: string;
+    /** Kodun son 4 karakteri (sipariş notu için) */
+    codeLast4: string;
+    /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+    cardId: string | null;
+    /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+    cardLast4: string;
+    /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+    kind: 'balance' | 'percent' | 'amount' | 'link';
+    type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    programId: string;
+    programName: string;
+    /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+    amountMinor: number;
+    percent: number | null;
+    currency: string;
+    /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+    state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+    /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+    generation: number;
+    /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+    heldUntil: string | null;
+    capturedMinor: number;
+    refundedMinor: number;
+    /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+    late: boolean;
+    releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+    createdAt: string;
+    capturedAt: string | null;
+    releasedAt: string | null;
+  }[];
+  unearned: {
+    cardLast4: string;
+    /** stamp, point, visit ya da try_minor (kuruş) */
+    unit: string;
+    earned: number;
+    reversed: number;
+    /** Kartta kalmadığı için geri alınamayan kısım */
+    short: number;
+  } | null;
+}
+
+/** Arguments of `refundCheckoutOrder`. */
+export interface RefundCheckoutOrderArgs extends RequestOptions {
+  /** Path parameters. */
+  params: RefundCheckoutOrderParams;
+  /** The JSON body. */
+  body?: RefundCheckoutOrderBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// listShopRedemptions · GET /v1/shops/{id}/redemptions
+
+/** Path parameters of `listShopRedemptions`. */
+export interface ListShopRedemptionsParams {
+  id: string;
+}
+
+/** Query parameters of `listShopRedemptions`. */
+export interface ListShopRedemptionsQuery {
+  state?: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  page?: number;
+  limit?: number;
+}
+
+/** Header parameters of `listShopRedemptions`, as sent on the wire. */
+export interface ListShopRedemptionsHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** One item of `listShopRedemptions`'s list. */
+export interface ListShopRedemptionsItem {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** Arguments of `listShopRedemptions`. */
+export interface ListShopRedemptionsArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ListShopRedemptionsParams;
+  /** Query parameters. */
+  query?: ListShopRedemptionsQuery;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// releaseShopRedemption · POST /v1/shops/{id}/redemptions/{redemptionId}/release
+
+/** Path parameters of `releaseShopRedemption`. */
+export interface ReleaseShopRedemptionParams {
+  id: string;
+  redemptionId: string;
+}
+
+/** Header parameters of `releaseShopRedemption`, as sent on the wire. */
+export interface ReleaseShopRedemptionHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `releaseShopRedemption`. */
+export interface ReleaseShopRedemptionBody {
+  /** Neden (kayda geçer, defter kaydının notu olur) */
+  reason: string;
+}
+
+/** The `data` of `releaseShopRedemption`'s answer. */
+export interface ReleaseShopRedemptionData {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** Arguments of `releaseShopRedemption`. */
+export interface ReleaseShopRedemptionArgs extends RequestOptions {
+  /** Path parameters. */
+  params: ReleaseShopRedemptionParams;
+  /** The JSON body. */
+  body: ReleaseShopRedemptionBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// refundShopRedemption · POST /v1/shops/{id}/redemptions/{redemptionId}/refund
+
+/** Path parameters of `refundShopRedemption`. */
+export interface RefundShopRedemptionParams {
+  id: string;
+  redemptionId: string;
+}
+
+/** Header parameters of `refundShopRedemption`, as sent on the wire. */
+export interface RefundShopRedemptionHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key': string;
+}
+
+/** Request body of `refundShopRedemption`. */
+export interface RefundShopRedemptionBody {
+  amountMinor: number;
+  /** Neden (kayda geçer, defter kaydının notu olur) */
+  reason: string;
+}
+
+/** The `data` of `refundShopRedemption`'s answer. */
+export interface RefundShopRedemptionData {
+  id: string;
+  orderId: string;
+  /** Kodun son 4 karakteri (sipariş notu için) */
+  codeLast4: string;
+  /** Kartın bu mağazaya özel, opak kimliği: bir siparişteki kodların aynı karta ait olup olmadığını karşılaştırmak için; başka bir şey söylemez */
+  cardId: string | null;
+  /** Kart numarasının son 4 karakteri; seri numarası mağazaya verilmez */
+  cardLast4: string;
+  /** balance: bakiye (hediye kartı, cashback) · percent: yüzde indirim · amount: kuponun tutarı · link: değer yok, sipariş bu karta işlenir (damga, puan, VIP) */
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+  programId: string;
+  programName: string;
+  /** balance: ayrılan tutar; amount/percent: siparişe uygulanan indirim (bilgi için); link: 0 */
+  amountMinor: number;
+  percent: number | null;
+  currency: string;
+  /** held ayrıldı · captured düşüldü · released bırakıldı · expired süresi dolup bırakıldı · refunded iade edildi · unbacked karşılıksız (ayırma bittikten sonra ödendi, kartta değer kalmamıştı) */
+  state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+  /** Aynı sipariş aynı kodu bıraktıktan sonra yeniden ayırdıkça artar */
+  generation: number;
+  /** Ayrılmışken: ödenmezse tutarın karta döneceği an (bağlantının bekletme süresi) */
+  heldUntil: string | null;
+  capturedMinor: number;
+  refundedMinor: number;
+  /** Ayırmanın süresi dolduktan sonra düşüldü (ya da karşılıksız kaldı) */
+  late: boolean;
+  releaseReason: 'cancelled' | 'failed' | 'expired' | 'merchant' | 'shop' | null;
+  createdAt: string;
+  capturedAt: string | null;
+  releasedAt: string | null;
+}
+
+/** Arguments of `refundShopRedemption`. */
+export interface RefundShopRedemptionArgs extends RequestOptions {
+  /** Path parameters. */
+  params: RefundShopRedemptionParams;
+  /** The JSON body. */
+  body: RefundShopRedemptionBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// setShopSettings · PATCH /v1/shops/{id}/settings
+
+/** Path parameters of `setShopSettings`. */
+export interface SetShopSettingsParams {
+  id: string;
+}
+
+/** Header parameters of `setShopSettings`, as sent on the wire. */
+export interface SetShopSettingsHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `setShopSettings`. */
+export interface SetShopSettingsBody {
+  tax?: {
+    giftcard?: 'payment' | 'discount';
+    cashback?: 'payment' | 'discount';
+    voucher?: 'payment' | 'discount';
+  };
+  refundReverses?: 'code_orders' | 'all' | 'never';
+  holdDays?: number;
+  accepts?: {
+    programIds: string[];
+  };
+}
+
+/** The `data` of `setShopSettings`'s answer. */
+export interface SetShopSettingsData {
+  id: string;
+  platform: 'shopify' | 'woocommerce';
+  programId: string;
+  programName: string;
+  programType: string;
+  currency: string;
+  /** order: her sipariş · amount: her `perAmountMinor` tutar için */
+  rule: 'order' | 'amount';
+  perAmountMinor: number;
+  /** Her seferinde eklenen damga/puan/ziyaret (cashback kartında tutar oranla hesaplanır) */
+  step: number;
+  enabled: boolean;
+  lastOrderAt: string | null;
+  createdAt: string;
+  /** Mağazanızın sipariş bildirimini göndereceği adres */
+  webhookUrl: string;
+  /** Kayıtlı siparişler sonucuna göre: credited işlendi · unmatched e-postası müşteriyle eşleşmedi · below eşiğin altında · paused bağlantı kapalıyken · currency para birimi farklı */
+  orders: {
+    credited: number;
+    unmatched: number;
+    below: number;
+    paused: number;
+    currency: number;
+  };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
+  } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
+}
+
+/** Arguments of `setShopSettings`. */
+export interface SetShopSettingsArgs extends RequestOptions {
+  /** Path parameters. */
+  params: SetShopSettingsParams;
+  /** The JSON body. */
+  body?: SetShopSettingsBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// setShopCeiling · PUT /v1/shops/{id}/ceiling
+
+/** Path parameters of `setShopCeiling`. */
+export interface SetShopCeilingParams {
+  id: string;
+}
+
+/** Header parameters of `setShopCeiling`, as sent on the wire. */
+export interface SetShopCeilingHeaders {
+  /** Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez). */
+  'Rewloy-Merchant'?: string;
+}
+
+/** Request body of `setShopCeiling`. */
+export interface SetShopCeilingBody {
+  programIds: string[];
+}
+
+/** The `data` of `setShopCeiling`'s answer. */
+export interface SetShopCeilingData {
+  id: string;
+  platform: 'shopify' | 'woocommerce';
+  programId: string;
+  programName: string;
+  programType: string;
+  currency: string;
+  /** order: her sipariş · amount: her `perAmountMinor` tutar için */
+  rule: 'order' | 'amount';
+  perAmountMinor: number;
+  /** Her seferinde eklenen damga/puan/ziyaret (cashback kartında tutar oranla hesaplanır) */
+  step: number;
+  enabled: boolean;
+  lastOrderAt: string | null;
+  createdAt: string;
+  /** Mağazanızın sipariş bildirimini göndereceği adres */
+  webhookUrl: string;
+  /** Kayıtlı siparişler sonucuna göre: credited işlendi · unmatched e-postası müşteriyle eşleşmedi · below eşiğin altında · paused bağlantı kapalıyken · currency para birimi farklı */
+  orders: {
+    credited: number;
+    unmatched: number;
+    below: number;
+    paused: number;
+    currency: number;
+  };
+  /** Mağazadan gelen son İMZALI istek: ne zaman ve ne oldu (credited işlendi · unmatched kartı yok · below eşiğin altında · paused bağlantı kapalıyken · currency başka para birimi · duplicate zaten kayıtlı siparişin tekrarı · ignored henüz ödenmemiş sipariş (kaydedilmez) · no_id sipariş numarası yok · bad_body gövde JSON değil). Hiç gelmediyse null. */
+  lastDelivery: {
+    at: string;
+    result: 'credited' | 'unmatched' | 'below' | 'paused' | 'currency' | 'duplicate' | 'ignored' | 'no_id' | 'bad_body' | 'cancelled' | 'refunded';
+  } | null;
+  /** Bu adrese gelen ve imzası tutmadığı için reddedilen son istek (dakikada en çok bir kez yazılır). Sık görünüyorsa mağazadaki gizli anahtar bu bağlantınınki değildir. Hiç olmadıysa null. */
+  lastRefusal: {
+    at: string;
+    reason: 'bad_signature';
+  } | null;
+  /** Bağlantı koduyla kurulduysa (`POST /v1/shops/connect`) eklentinin yalnız bu bağlantıya bağlı, etkin API anahtarı ve yetkileri; yoksa null. Bağlantı silinince anahtar da iptal edilir. Yetkiler `PUT /v1/shops/{id}/plugin-abilities` ile değişir. */
+  pluginKey: {
+    id: string;
+    prefix: string;
+    name: string;
+    /** Anahtarın bağlantının dışında yapabildikleri (ADR 178): `view` Görüntüleme (kartlar, durumları, programın sayıları ve son işlemleri; kişisel veri yok), `till` Kasa (tek bir şubede) */
+    abilities: Array<'view' | 'till'>;
+    /** Kasa açıksa şubesi; değilse null */
+    tillLocationId: string | null;
+    /** Kasanın şubesinin adı; değilse null */
+    tillLocationName: string | null;
+    /** Kasanın şubesi arşivlendi: kasa orada çalışmaz ve `abilities` içinde `till` yoktur; başka bir şube seçilene kadar */
+    tillArchived: boolean;
+  } | null;
+  /** Mağazanın adı (eklenti bağlanırken gönderdi): kart sahibi bir kodun nerede kullanıldığını bu adla görür. Yoksa null. */
+  shopName: string | null;
+  /** Ödeme adımındaki kart kodlarının ayarları (ADR 179). `PATCH /v1/shops/{id}/settings` değiştirir. */
+  settings: {
+    /** Kart değerinin siparişe nasıl uygulanacağı; eklenti uygular. Hangisinin doğru olduğu muhasebecinizin kararıdır. */
+    tax: {
+      /** Hediye kartı: `payment` (varsayılan) vergiden sonra, ödeme gibi — KDV değişmez; `discount` vergiden önce kupon gibi — KDV matrahı düşer */
+      giftcard: 'payment' | 'discount';
+      /** Cashback: `discount` (varsayılan) ya da `payment` */
+      cashback: 'payment' | 'discount';
+      /** Tutarlı kupon: `discount` (varsayılan) ya da `payment`. Yüzdelik indirim her zaman `discount` */
+      voucher: 'payment' | 'discount';
+    };
+    /** İade edilen siparişin kazancı: `code_orders` (varsayılan) yalnız Rewloy kodu kullanılan siparişlerde geri alınır, `all` her iade edilen siparişte, `never` hiçbirinde. Hiçbir zaman sıfırın altına inmez. */
+    refundReverses: 'code_orders' | 'all' | 'never';
+    /** Bekletme süresi: ödenmeyen bir siparişin ayırdığı tutar en geç bu kadar gün sonra karta döner (varsayılan 7) */
+    holdDays: number;
+  };
+  accepts: {
+    /** İşletmenin bu mağazada kodu kabul edilen DİĞER programları (açık olanlar). Bağlantının kendi programı her zaman kabul edilir ve burada yer almaz. */
+    programIds: string[];
+    /** Eklentinin anahtarının açabileceği programlar (tavan, `PUT /v1/shops/{id}/ceiling`), her biri adı ve türüyle: eklentinin anahtarı yalnız kendi programını okuyabildiği için adları buradan alır (adlar işletmenin kendi adlarıdır). Eklentinin anahtarı yoksa null: o zaman kodu kullanan kimliğin kendi yetkileri karar verir. */
+    ceiling: {
+      id: string;
+      name: string;
+      type: 'stamp' | 'points' | 'discount' | 'vip' | 'giftcard' | 'voucher' | 'cashback';
+    }[] | null;
+  };
+  /** Karşılıksız kalan kod kullanımları: ayırmanın süresi dolduktan sonra ödenen ve kartta artık yetecek değer bulunmayan siparişler (`GET /v1/shops/{id}/redemptions?state=unbacked`). */
+  unbacked: {
+    count: number;
+    lastAt: string | null;
+  };
+}
+
+/** Arguments of `setShopCeiling`. */
+export interface SetShopCeilingArgs extends RequestOptions {
+  /** Path parameters. */
+  params: SetShopCeilingParams;
+  /** The JSON body. */
+  body: SetShopCeilingBody;
+  /**
+   * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
+   *
+   * `Rewloy-Merchant`. Defaults to the client's `merchant`.
+   */
+  merchant?: string | undefined;
+}
+
+// ----------------------------------------------------------------------
+// holderCheckoutCodes · GET /v1/holder/cards/{serial}/checkout-codes
+
+/** Path parameters of `holderCheckoutCodes`. */
+export interface HolderCheckoutCodesParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** The `data` of `holderCheckoutCodes`'s answer. */
+export interface HolderCheckoutCodesData {
+  online: boolean;
+  offer: {
+    kind: 'balance' | 'percent' | 'amount' | 'link';
+    currency: string;
+    maxMinor: number | null;
+    percent: number | null;
+    amountMinor: number | null;
+    /** Kupon ve indirim kartı: kullanım hakkı sınırlıysa kalan hak (açık ayırmalar düşülmüş); sınırsızsa ve diğer kartlarda null. 1 ise kod son hakkı ayırır. */
+    usesLeft: number | null;
+  } | null;
+  refusal: string | null;
+  holds: {
+    amountMinor: number;
+    heldUntil: string;
+    shop: string;
+  }[];
+  codes: {
+    id: string;
+    last4: string;
+    capMinor: number | null;
+    /** open kullanılabilir · attached bir siparişe bağlandı · expired süresi doldu · cancelled iptal edildi */
+    state: 'open' | 'attached' | 'expired' | 'cancelled';
+    firstUseBy: string;
+    attachBy: string;
+    createdAt: string;
+    order: {
+      shop: string;
+      amountMinor: number;
+      state: 'held' | 'captured' | 'released' | 'expired' | 'refunded' | 'unbacked';
+      heldUntil: string | null;
+      kind: 'balance' | 'percent' | 'amount' | 'link';
+      /** Bırakılan ya da süresi dolan ayırmada kimin ya da neyin bıraktığı: cancelled mağaza siparişi iptal etti · failed ödeme tamamlanmadı · shop mağaza bıraktı · merchant işletme elle bıraktı · expired süre doldu */
+      releaseReason: 'cancelled' | 'failed' | 'shop' | 'merchant' | 'expired' | null;
+    } | null;
+  }[];
+}
+
+/** Arguments of `holderCheckoutCodes`. */
+export interface HolderCheckoutCodesArgs extends RequestOptions {
+  /** Path parameters. */
+  params: HolderCheckoutCodesParams;
+}
+
+// ----------------------------------------------------------------------
+// mintHolderCheckoutCode · POST /v1/holder/cards/{serial}/checkout-codes
+
+/** Path parameters of `mintHolderCheckoutCode`. */
+export interface MintHolderCheckoutCodeParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+}
+
+/** Request body of `mintHolderCheckoutCode`. */
+export interface MintHolderCheckoutCodeBody {
+  amountMinor?: number;
+}
+
+/** The `data` of `mintHolderCheckoutCode`'s answer. */
+export interface MintHolderCheckoutCodeData {
+  id: string;
+  /** Kod: yalnız bu yanıtta; Rewloy saklamaz. Kişiye gösterin, "Kopyala" ile verin; günlüğe, adrese ya da bildirime yazmayın. */
+  code: string;
+  /** Bakiyeli kartta kodun en fazla düşebileceği tutar */
+  capMinor: number | null;
+  currency: string;
+  kind: 'balance' | 'percent' | 'amount' | 'link';
+  percent: number | null;
+  /** Kupon: online tutarı */
+  amountMinor: number | null;
+  /** Kod bu ana kadar ödeme adımında kullanılmaya başlanmalı (15 dakika) */
+  firstUseBy: string;
+  /** Kullanılmaya başlanan kod bu ana kadar bir siparişe bağlanmalı (45 dakika) */
+  attachBy: string;
+}
+
+/** Arguments of `mintHolderCheckoutCode`. */
+export interface MintHolderCheckoutCodeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: MintHolderCheckoutCodeParams;
+  /** The JSON body. */
+  body?: MintHolderCheckoutCodeBody;
+}
+
+// ----------------------------------------------------------------------
+// cancelHolderCheckoutCode · DELETE /v1/holder/cards/{serial}/checkout-codes/{id}
+
+/** Path parameters of `cancelHolderCheckoutCode`. */
+export interface CancelHolderCheckoutCodeParams {
+  /** Kart seri numarası, XXXX-XXXX-XXXX */
+  serial: string;
+  id: string;
+}
+
+/** Arguments of `cancelHolderCheckoutCode`. */
+export interface CancelHolderCheckoutCodeArgs extends RequestOptions {
+  /** Path parameters. */
+  params: CancelHolderCheckoutCodeParams;
 }
 
 // ----------------------------------------------------------------------
@@ -8370,6 +10116,11 @@ export interface ListWebhooksItem {
     pending: number;
   };
   lastDelivered: string | null;
+  /** Webhook'u ekleyen API anahtarı; bir kişi eklediyse null. Anahtar kaldırılınca, süresi dolunca ya da olayları okuyamaz olunca webhook kendiliğinden kapanır (`disabledReason`). Bir kişi onu yeniden açarsa webhook o kişinin olur (ADR 182). */
+  createdByKey: {
+    id: string;
+    name: string;
+  } | null;
 }
 
 /** The `data` of `listWebhooks`'s answer. */
@@ -8418,6 +10169,11 @@ export interface CreateWebhookData {
       pending: number;
     };
     lastDelivered: string | null;
+    /** Webhook'u ekleyen API anahtarı; bir kişi eklediyse null. Anahtar kaldırılınca, süresi dolunca ya da olayları okuyamaz olunca webhook kendiliğinden kapanır (`disabledReason`). Bir kişi onu yeniden açarsa webhook o kişinin olur (ADR 182). */
+    createdByKey: {
+      id: string;
+      name: string;
+    } | null;
   };
   /** whsec_…; yalnız bu yanıtta */
   secret: string;
@@ -8466,6 +10222,11 @@ export interface GetWebhookData {
     pending: number;
   };
   lastDelivered: string | null;
+  /** Webhook'u ekleyen API anahtarı; bir kişi eklediyse null. Anahtar kaldırılınca, süresi dolunca ya da olayları okuyamaz olunca webhook kendiliğinden kapanır (`disabledReason`). Bir kişi onu yeniden açarsa webhook o kişinin olur (ADR 182). */
+  createdByKey: {
+    id: string;
+    name: string;
+  } | null;
 }
 
 /** Arguments of `getWebhook`. */
@@ -8516,6 +10277,11 @@ export interface SetWebhookStatusData {
     pending: number;
   };
   lastDelivered: string | null;
+  /** Webhook'u ekleyen API anahtarı; bir kişi eklediyse null. Anahtar kaldırılınca, süresi dolunca ya da olayları okuyamaz olunca webhook kendiliğinden kapanır (`disabledReason`). Bir kişi onu yeniden açarsa webhook o kişinin olur (ADR 182). */
+  createdByKey: {
+    id: string;
+    name: string;
+  } | null;
 }
 
 /** Arguments of `setWebhookStatus`. */
@@ -10041,6 +11807,12 @@ export interface RemoveHolderPasskeyArgs extends RequestOptions {
 // ----------------------------------------------------------------------
 // addHolderEmail · POST /v1/holder/identities/email
 
+/** Header parameters of `addHolderEmail`, as sent on the wire. */
+export interface AddHolderEmailHeaders {
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key'?: string;
+}
+
 /** Request body of `addHolderEmail`. */
 export interface AddHolderEmailBody {
   email: string;
@@ -10056,6 +11828,12 @@ export interface AddHolderEmailData {
 export interface AddHolderEmailArgs extends RequestOptions {
   /** The JSON body. */
   body: AddHolderEmailBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -10084,6 +11862,12 @@ export interface VerifyHolderEmailArgs extends RequestOptions {
 // ----------------------------------------------------------------------
 // addHolderPhone · POST /v1/holder/identities/phone
 
+/** Header parameters of `addHolderPhone`, as sent on the wire. */
+export interface AddHolderPhoneHeaders {
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key'?: string;
+}
+
 /** Request body of `addHolderPhone`. */
 export interface AddHolderPhoneBody {
   /** Bir Türkiye cep telefonu numarası: `+905321234567`, `05321234567`, `532 123 45 67` (boşluklar yok sayılır). Telefonla giriş açık değilse `501 NOT_ENABLED`. */
@@ -10104,6 +11888,12 @@ export interface AddHolderPhoneData {
 export interface AddHolderPhoneArgs extends RequestOptions {
   /** The JSON body. */
   body: AddHolderPhoneBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -10192,6 +11982,12 @@ export interface ReplaceHolderIdentityParams {
   id: string;
 }
 
+/** Header parameters of `replaceHolderIdentity`, as sent on the wire. */
+export interface ReplaceHolderIdentityHeaders {
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key'?: string;
+}
+
 /** Request body of `replaceHolderIdentity`. */
 export interface ReplaceHolderIdentityBody {
   /** Yeni e-posta (bir e-postanın yerine) */
@@ -10216,6 +12012,12 @@ export interface ReplaceHolderIdentityArgs extends RequestOptions {
   params: ReplaceHolderIdentityParams;
   /** The JSON body. */
   body?: ReplaceHolderIdentityBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -10617,8 +12419,8 @@ export interface HolderNotificationsQuery {
 /** One item of `holderNotifications`'s list. */
 export interface HolderNotificationsItem {
   id: string;
-  /** campaign: bir işletmenin kampanyası; automation: otomatik mesaj ya da mesaj dizisinin adımı; reward_ready: "Ödülünüz hazır"; test: kişinin kendi denemesi; security: hesabın giriş yolunun değişmesi (yolda ya da yapıldı) ya da onaylanan bir kurtarma talebi */
-  kind: 'campaign' | 'automation' | 'reward_ready' | 'test' | 'security';
+  /** campaign: bir işletmenin kampanyası; automation: otomatik mesaj ya da mesaj dizisinin adımı; reward_ready: "Ödülünüz hazır"; test: kişinin kendi denemesi; security: hesabın giriş yolunun değişmesi (yolda ya da yapıldı) ya da onaylanan bir kurtarma talebi; checkout_code: kartlarınızdan biri için online ödeme kodu oluşturuldu (bir İşlem bildirimi; kodu oluşturan cihaza gitmez) */
+  kind: 'campaign' | 'automation' | 'reward_ready' | 'test' | 'security' | 'checkout_code';
   title: string;
   body: string;
   /** Bildirimin işletmesi (`merchantSlug`); denemede `null` */
@@ -10788,6 +12590,12 @@ export interface TestHolderDevicePushArgs extends RequestOptions {}
 // ----------------------------------------------------------------------
 // startHolderRecovery · POST /v1/holder/recovery
 
+/** Header parameters of `startHolderRecovery`, as sent on the wire. */
+export interface StartHolderRecoveryHeaders {
+  /** Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür. */
+  'Idempotency-Key'?: string;
+}
+
 /** Request body of `startHolderRecovery`. */
 export interface StartHolderRecoveryBody {
   /** Değişen: e-posta ya da numara (eski ve yeni aynı türden) */
@@ -10820,6 +12628,12 @@ export interface StartHolderRecoveryData {
 export interface StartHolderRecoveryArgs extends RequestOptions {
   /** The JSON body. */
   body: StartHolderRecoveryBody;
+  /**
+   * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
+   *
+   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   */
+  idempotencyKey?: string | undefined;
 }
 
 // ----------------------------------------------------------------------
@@ -10917,14 +12731,15 @@ export interface Operations {
     result: IssuePassData;
     data: IssuePassData;
     responses: {
+      200: { data: IssuePassData };
       201: { data: IssuePassData };
       400: ErrorBody<'EMAIL_BLOCKED' | 'CUSTOMER_BLOCKED' | 'INVALID_CUSTOMER' | 'INVALID_PHONE' | 'INVALID_BIRTHDAY' | 'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'OUT_OF_SCOPE' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'PLAN_FEATURE_MISSING' | 'OWNER_EMAIL_UNVERIFIED' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'PROGRAM_NOT_FOUND' | 'LOCATION_NOT_FOUND' | 'SHOP_NOT_FOUND'>;
       409: ErrorBody<'PASS_REFUSED' | 'TEST_LIMIT_REACHED' | 'SHOP_PROGRAM_MISMATCH' | 'IDEMPOTENCY_IN_PROGRESS'>;
       410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'CONSENT_REQUIRED' | 'IDEMPOTENCY_KEY_REUSED'>;
+      422: ErrorBody<'CONSENT_REQUIRED' | 'IDEMPOTENCY_KEY_REUSED' | 'CURRENCY_MISMATCH'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
@@ -10953,7 +12768,7 @@ export interface Operations {
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'PASS_NOT_FOUND'>;
+      404: ErrorBody<'PASS_NOT_FOUND' | 'LOCATION_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -10965,13 +12780,46 @@ export interface Operations {
     data: PassActionData;
     responses: {
       200: { data: PassActionData };
-      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED' | 'IDEMPOTENCY_KEY_REQUIRED'>;
+      400: ErrorBody<'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'PASS_NOT_FOUND'>;
+      404: ErrorBody<'PASS_NOT_FOUND' | 'LOCATION_NOT_FOUND'>;
       409: ErrorBody<'WRONG_LOCATION' | 'INSUFFICIENT_BALANCE' | 'REWARD_NOT_READY' | 'VISIT_ALREADY_COUNTED' | 'PASS_INACTIVE' | 'PASS_EXPIRED' | 'PASS_USED_UP' | 'PASS_REFUSED'>;
       410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'WRONG_CARD_TYPE'>;
+      422: ErrorBody<'WRONG_CARD_TYPE' | 'IDEMPOTENCY_KEY_REUSED' | 'CURRENCY_MISMATCH'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  recordSale: {
+    args: RecordSaleArgs;
+    result: RecordSaleData;
+    data: RecordSaleData;
+    responses: {
+      200: { data: RecordSaleData };
+      400: ErrorBody<'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND' | 'LOCATION_NOT_FOUND'>;
+      409: ErrorBody<'WRONG_LOCATION' | 'PASS_INACTIVE' | 'PASS_EXPIRED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED' | 'CURRENCY_MISMATCH'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  reverseSale: {
+    args: ReverseSaleArgs;
+    result: ReverseSaleData;
+    data: ReverseSaleData;
+    responses: {
+      200: { data: ReverseSaleData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND' | 'LOCATION_NOT_FOUND' | 'SALE_NOT_FOUND'>;
+      409: ErrorBody<'SALE_AMBIGUOUS' | 'SALE_ALREADY_SPENT'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
@@ -11054,6 +12902,20 @@ export interface Operations {
       500: ErrorBody<'INTERNAL'>;
     };
   };
+  getMeta: {
+    args: GetMetaArgs;
+    result: GetMetaData;
+    data: GetMetaData;
+    responses: {
+      200: { data: GetMetaData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
   openapi: {
     args: OpenapiArgs;
     result: unknown;
@@ -11126,7 +12988,9 @@ export interface Operations {
     data: HolderLoginData;
     responses: {
       202: { data: HolderLoginData };
-      400: ErrorBody<'INVALID_PHONE' | 'VALIDATION'>;
+      400: ErrorBody<'INVALID_PHONE' | 'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION'>;
+      409: ErrorBody<'IDEMPOTENCY_IN_PROGRESS'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
       501: ErrorBody<'NOT_ENABLED'>;
@@ -11141,6 +13005,7 @@ export interface Operations {
       201: { data: HolderSessionData };
       400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
       401: ErrorBody<'TOKEN_INVALID'>;
+      404: ErrorBody<'CODE_INVALID'>;
       410: ErrorBody<'FLOW_EXPIRED' | 'TOKEN_INVALID'>;
       429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -11308,9 +13173,12 @@ export interface Operations {
     data: AcceptInviteData;
     responses: {
       201: { data: AcceptInviteData };
-      400: ErrorBody<'TEAM_REFUSED' | 'VALIDATION'>;
+      400: ErrorBody<'TEAM_REFUSED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'INVITE_OTHER_ACCOUNT' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'INVITE_NOT_FOUND'>;
-      409: ErrorBody<'SEAT_LIMIT'>;
+      409: ErrorBody<'INVITE_SIGN_IN' | 'SEAT_LIMIT'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
@@ -11962,7 +13830,7 @@ export interface Operations {
       403: ErrorBody<'PLAN_FEATURE_MISSING' | 'OUT_OF_SCOPE' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'PROGRAM_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
-      422: ErrorBody<'NOT_AN_INSTRUMENT' | 'INVALID_BATCH'>;
+      422: ErrorBody<'NOT_AN_INSTRUMENT' | 'INVALID_BATCH' | 'CURRENCY_MISMATCH'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
@@ -12141,7 +14009,7 @@ export interface Operations {
       204: void;
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'SEGMENT_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       422: ErrorBody<'INVALID_SEGMENT'>;
@@ -12172,7 +14040,7 @@ export interface Operations {
       200: { data: ResetSegmentData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'SEGMENT_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       422: ErrorBody<'INVALID_SEGMENT'>;
@@ -12278,7 +14146,7 @@ export interface Operations {
       200: { data: CancelCampaignData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'CAMPAIGN_NOT_FOUND'>;
       409: ErrorBody<'NOT_CANCELLABLE'>;
       410: ErrorBody<'TOKEN_INVALID'>;
@@ -12536,7 +14404,7 @@ export interface Operations {
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'LOCATION_NOT_FOUND'>;
+      404: ErrorBody<'LOCATION_NOT_FOUND' | 'PROGRAM_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -12551,7 +14419,7 @@ export interface Operations {
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'OUT_OF_SCOPE' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'LOCATION_NOT_FOUND'>;
+      404: ErrorBody<'LOCATION_NOT_FOUND' | 'PROGRAM_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -12579,7 +14447,7 @@ export interface Operations {
       200: string;
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -12995,7 +14863,7 @@ export interface Operations {
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'STEP_UP_FAILED' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
-      404: ErrorBody<'PROGRAM_NOT_FOUND'>;
+      404: ErrorBody<'PROGRAM_NOT_FOUND' | 'LOCATION_NOT_FOUND'>;
       409: ErrorBody<'LIMIT'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       422: ErrorBody<'NOT_AN_INSTRUMENT'>;
@@ -13026,8 +14894,251 @@ export interface Operations {
       201: { data: ConnectShopData };
       400: ErrorBody<'VALIDATION'>;
       403: ErrorBody<'PLAN_FEATURE_MISSING'>;
-      404: ErrorBody<'CONNECT_TOKEN_INVALID'>;
+      404: ErrorBody<'CONNECT_TOKEN_INVALID' | 'LOCATION_NOT_FOUND'>;
       409: ErrorBody<'LIMIT'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  setShopPluginAbilities: {
+    args: SetShopPluginAbilitiesArgs;
+    result: SetShopPluginAbilitiesData;
+    data: SetShopPluginAbilitiesData;
+    responses: {
+      200: { data: SetShopPluginAbilitiesData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'STEP_UP_FAILED' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'LOCATION_NOT_FOUND'>;
+      409: ErrorBody<'NO_PLUGIN_KEY'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  quoteCheckoutCode: {
+    args: QuoteCheckoutCodeArgs;
+    result: QuoteCheckoutCodeData;
+    data: QuoteCheckoutCodeData;
+    responses: {
+      200: { data: QuoteCheckoutCodeData };
+      400: ErrorBody<'CODE_INVALID' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'CODE_INVALID'>;
+      409: ErrorBody<'CODE_USED' | 'CODE_RELEASED' | 'PASS_INACTIVE' | 'PASS_EXPIRED' | 'SHOP_PAUSED' | 'PASS_USED_UP' | 'INSUFFICIENT_BALANCE'>;
+      410: ErrorBody<'CODE_EXPIRED' | 'TOKEN_INVALID'>;
+      422: ErrorBody<'CODE_NOT_ACCEPTED_HERE' | 'CURRENCY_MISMATCH' | 'VOUCHER_NOT_ONLINE'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  listOrderRedemptions: {
+    args: ListOrderRedemptionsArgs;
+    result: ListOrderRedemptionsData;
+    data: ListOrderRedemptionsData;
+    responses: {
+      200: { data: ListOrderRedemptionsData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  holdCheckoutCode: {
+    args: HoldCheckoutCodeArgs;
+    result: HoldCheckoutCodeData;
+    data: HoldCheckoutCodeData;
+    responses: {
+      200: { data: HoldCheckoutCodeData };
+      201: { data: HoldCheckoutCodeData };
+      400: ErrorBody<'CODE_INVALID' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'CODE_INVALID'>;
+      409: ErrorBody<'CODE_USED' | 'CODE_RELEASED' | 'PASS_INACTIVE' | 'PASS_EXPIRED' | 'SHOP_PAUSED' | 'PASS_USED_UP' | 'INSUFFICIENT_BALANCE' | 'CARD_IN_ORDER' | 'ORDER_CODES_LIMIT'>;
+      410: ErrorBody<'CODE_EXPIRED' | 'TOKEN_INVALID'>;
+      422: ErrorBody<'CODE_NOT_ACCEPTED_HERE' | 'CURRENCY_MISMATCH' | 'VOUCHER_NOT_ONLINE'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  captureCheckoutOrder: {
+    args: CaptureCheckoutOrderArgs;
+    result: CaptureCheckoutOrderData;
+    data: CaptureCheckoutOrderData;
+    responses: {
+      200: { data: CaptureCheckoutOrderData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'REDEMPTION_NOT_FOUND'>;
+      409: ErrorBody<'HOLD_UNBACKED' | 'PASS_INACTIVE' | 'PASS_EXPIRED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  releaseCheckoutOrder: {
+    args: ReleaseCheckoutOrderArgs;
+    result: ReleaseCheckoutOrderData;
+    data: ReleaseCheckoutOrderData;
+    responses: {
+      200: { data: ReleaseCheckoutOrderData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  refundCheckoutOrder: {
+    args: RefundCheckoutOrderArgs;
+    result: RefundCheckoutOrderData;
+    data: RefundCheckoutOrderData;
+    responses: {
+      200: { data: RefundCheckoutOrderData };
+      400: ErrorBody<'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'REDEMPTION_NOT_FOUND'>;
+      409: ErrorBody<'REFUND_TOO_LARGE' | 'NOT_REFUNDABLE'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  listShopRedemptions: {
+    args: ListShopRedemptionsArgs;
+    result: Page<ListShopRedemptionsItem>;
+    data: ListShopRedemptionsItem[];
+    responses: {
+      200: { data: ListShopRedemptionsItem[]; meta: PageMeta };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'SHOP_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  releaseShopRedemption: {
+    args: ReleaseShopRedemptionArgs;
+    result: ReleaseShopRedemptionData;
+    data: ReleaseShopRedemptionData;
+    responses: {
+      200: { data: ReleaseShopRedemptionData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'REDEMPTION_NOT_FOUND'>;
+      409: ErrorBody<'NOT_HELD'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'REASON_REQUIRED'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  refundShopRedemption: {
+    args: RefundShopRedemptionArgs;
+    result: RefundShopRedemptionData;
+    data: RefundShopRedemptionData;
+    responses: {
+      200: { data: RefundShopRedemptionData };
+      400: ErrorBody<'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'REDEMPTION_NOT_FOUND'>;
+      409: ErrorBody<'REFUND_TOO_LARGE' | 'NOT_REFUNDABLE'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'REASON_REQUIRED' | 'IDEMPOTENCY_KEY_REUSED'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  setShopSettings: {
+    args: SetShopSettingsArgs;
+    result: SetShopSettingsData;
+    data: SetShopSettingsData;
+    responses: {
+      200: { data: SetShopSettingsData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'OUT_OF_SCOPE' | 'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'PROGRAM_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  setShopCeiling: {
+    args: SetShopCeilingArgs;
+    result: SetShopCeilingData;
+    data: SetShopCeilingData;
+    responses: {
+      200: { data: SetShopCeilingData };
+      400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      404: ErrorBody<'SHOP_NOT_FOUND' | 'PROGRAM_NOT_FOUND'>;
+      409: ErrorBody<'NO_PLUGIN_KEY'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  holderCheckoutCodes: {
+    args: HolderCheckoutCodesArgs;
+    result: HolderCheckoutCodesData;
+    data: HolderCheckoutCodesData;
+    responses: {
+      200: { data: HolderCheckoutCodesData };
+      400: ErrorBody<'VALIDATION'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  mintHolderCheckoutCode: {
+    args: MintHolderCheckoutCodeArgs;
+    result: MintHolderCheckoutCodeData;
+    data: MintHolderCheckoutCodeData;
+    responses: {
+      200: { data: MintHolderCheckoutCodeData };
+      201: { data: MintHolderCheckoutCodeData };
+      400: ErrorBody<'VALIDATION'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND'>;
+      409: ErrorBody<'PASS_INACTIVE' | 'PASS_EXPIRED' | 'NOT_ONLINE' | 'INSUFFICIENT_BALANCE' | 'PASS_USED_UP' | 'TOO_MANY_CODES'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'VOUCHER_NOT_ONLINE'>;
+      429: ErrorBody<'RATE_LIMITED'>;
+      500: ErrorBody<'INTERNAL'>;
+    };
+  };
+  cancelHolderCheckoutCode: {
+    args: CancelHolderCheckoutCodeArgs;
+    result: void;
+    data: void;
+    responses: {
+      204: void;
+      400: ErrorBody<'VALIDATION'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
+      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'PASS_NOT_FOUND' | 'CODE_NOT_FOUND'>;
+      409: ErrorBody<'CODE_ATTACHED'>;
+      410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
@@ -13291,7 +15402,7 @@ export interface Operations {
     responses: {
       200: { data: ListWebhooksData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
@@ -13305,7 +15416,7 @@ export interface Operations {
     responses: {
       201: { data: CreateWebhookData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'PLAN_FEATURE_MISSING' | 'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       409: ErrorBody<'LIMIT'>;
       410: ErrorBody<'TOKEN_INVALID'>;
@@ -13321,8 +15432,8 @@ export interface Operations {
     responses: {
       200: { data: GetWebhookData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'WEBHOOK_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
@@ -13336,8 +15447,8 @@ export interface Operations {
     responses: {
       200: { data: SetWebhookStatusData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'WEBHOOK_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
@@ -13351,8 +15462,8 @@ export interface Operations {
     responses: {
       200: { data: ListWebhookDeliveriesItem[]; meta: PageMeta };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'WEBHOOK_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
@@ -13366,8 +15477,8 @@ export interface Operations {
     responses: {
       202: { data: TestWebhookData };
       400: ErrorBody<'VALIDATION' | 'MERCHANT_REQUIRED'>;
-      401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
-      403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
+      401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
+      403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'WEBHOOK_NOT_FOUND'>;
       410: ErrorBody<'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
@@ -13951,10 +16062,12 @@ export interface Operations {
     data: AddHolderEmailData;
     responses: {
       202: { data: AddHolderEmailData };
-      400: ErrorBody<'VALIDATION'>;
+      400: ErrorBody<'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      409: ErrorBody<'IDEMPOTENCY_IN_PROGRESS'>;
       410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
@@ -13968,6 +16081,7 @@ export interface Operations {
       400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'CODE_INVALID'>;
       409: ErrorBody<'MERGE_REQUIRED'>;
       410: ErrorBody<'FLOW_EXPIRED' | 'TOKEN_INVALID'>;
       429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
@@ -13980,10 +16094,12 @@ export interface Operations {
     data: AddHolderPhoneData;
     responses: {
       202: { data: AddHolderPhoneData };
-      400: ErrorBody<'INVALID_PHONE' | 'VALIDATION'>;
+      400: ErrorBody<'INVALID_PHONE' | 'IDEMPOTENCY_KEY_REQUIRED' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      409: ErrorBody<'IDEMPOTENCY_IN_PROGRESS'>;
       410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
       501: ErrorBody<'NOT_ENABLED'>;
@@ -13999,6 +16115,7 @@ export interface Operations {
       400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
+      404: ErrorBody<'CODE_INVALID'>;
       409: ErrorBody<'MERGE_REQUIRED'>;
       410: ErrorBody<'FLOW_EXPIRED' | 'TOKEN_INVALID'>;
       429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
@@ -14042,12 +16159,13 @@ export interface Operations {
     data: ReplaceHolderIdentityData;
     responses: {
       202: { data: ReplaceHolderIdentityData };
-      400: ErrorBody<'VALIDATION' | 'INVALID_PHONE'>;
+      400: ErrorBody<'VALIDATION' | 'INVALID_PHONE' | 'IDEMPOTENCY_KEY_REQUIRED'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
       404: ErrorBody<'NOT_FOUND'>;
-      409: ErrorBody<'IDENT_SAME'>;
+      409: ErrorBody<'IDENT_SAME' | 'IDEMPOTENCY_IN_PROGRESS'>;
       410: ErrorBody<'TOKEN_INVALID'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
       501: ErrorBody<'NOT_ENABLED'>;
@@ -14063,7 +16181,7 @@ export interface Operations {
       400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
       401: ErrorBody<'UNAUTHENTICATED' | 'TOKEN_INVALID'>;
       403: ErrorBody<'FORBIDDEN' | 'CREDENTIAL_NOT_ALLOWED'>;
-      404: ErrorBody<'NOT_FOUND'>;
+      404: ErrorBody<'CODE_INVALID' | 'NOT_FOUND'>;
       409: ErrorBody<'MERGE_REQUIRED' | 'IDENT_SAME'>;
       410: ErrorBody<'FLOW_EXPIRED' | 'TOKEN_INVALID'>;
       429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
@@ -14395,7 +16513,9 @@ export interface Operations {
     data: StartHolderRecoveryData;
     responses: {
       202: { data: StartHolderRecoveryData };
-      400: ErrorBody<'VALIDATION' | 'INVALID_PHONE'>;
+      400: ErrorBody<'VALIDATION' | 'INVALID_PHONE' | 'IDEMPOTENCY_KEY_REQUIRED'>;
+      409: ErrorBody<'IDEMPOTENCY_IN_PROGRESS'>;
+      422: ErrorBody<'IDEMPOTENCY_KEY_REUSED'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
       501: ErrorBody<'NOT_ENABLED'>;
@@ -14409,6 +16529,7 @@ export interface Operations {
     responses: {
       201: { data: VerifyHolderRecoveryData };
       400: ErrorBody<'CODE_INVALID' | 'VALIDATION'>;
+      404: ErrorBody<'CODE_INVALID'>;
       410: ErrorBody<'FLOW_EXPIRED'>;
       429: ErrorBody<'CODE_LOCKED' | 'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
@@ -14447,6 +16568,7 @@ export type PagedOperationId =
   | 'listActivity'
   | 'listAccessLog'
   | 'listShopOrders'
+  | 'listShopRedemptions'
   | 'listApiKeyRequests'
   | 'listWebhookDeliveries'
   | 'listTestMessages'
