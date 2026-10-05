@@ -120,6 +120,15 @@ const sonuc = await rewloy.passAction({
   idempotencyKey: `kasa3-z0187-fis${fisNo}`,   // aşağıya bakın
 });
 if (sonuc.duplicate) console.log('Bu işlem zaten yazılmış');
+
+// Yanlışlıkla bir harcama mı yapıldı? Yaparken gönderdiğiniz anahtarla geri alın:
+await rewloy.passAction({
+  params: { serial },
+  body: { action: 'spend', locationId, amountMinor: 2500 },
+  idempotencyKey: `kasa3-z0187-iptal${fisNo}`,
+});
+const iptal = await rewloy.reverseAction({ params: { serial }, body: { actionKey: `kasa3-z0187-iptal${fisNo}` } });
+console.log(iptal.undone, iptal.restored, iptal.balance);   // 'spend', 2500, kartın bakiyesi
 ```
 
 ### Satış: `recordSale`
@@ -172,6 +181,47 @@ console.log(geri.reversed, geri.applied, geri.balance, geri.duplicate);
 Bir satış bir kez geri alınır (tekrar `duplicate: true` döner). Kazanılan
 kullanılmışsa (ödüle ya da harcamaya gitmişse) `409 SALE_ALREADY_SPENT` gelir ve
 hiçbir şey yazılmaz.
+
+**Çevrimdışı kasa kuyruğu: `occurredAt`.** Bağlantı koptuğunda satışı sonra
+yazıyorsanız `occurredAt` ile satışın gerçekten olduğu anı (ISO 8601, saat
+dilimiyle) gönderin; geçmişte, kartın geçmişinde o anla görünür. Gelecekte
+olamaz (2 dakikalık saat farkı kabul edilir). `idempotencyKey` kuyruktaki
+kayıtla birlikte saklanır, tekrar gönderilince satış ikinci kez yazılmaz.
+
+```ts
+await rewloy.recordSale({
+  params: { serial },
+  body: { locationId, amountMinor: 4550, reference: `fis-${fisNo}`, occurredAt: '2026-10-05T14:32:10+03:00' },
+  idempotencyKey: anahtar,
+});
+```
+
+**Kasa işlemini iptal etmek: `reverseAction`.** `passAction` ile yapılan bir
+harcama, ödül ya da kullanım yanlışlıkla yapıldıysa (`spend`, `spend-points`,
+`redeem-stamps`, `redeem-reward`, `use`) `reverseAction` tamamını geri verir.
+İşlemi, yaparken gönderdiğiniz `Idempotency-Key` (`actionKey`) ya da işlemin
+`reference` değeriyle bulur (`passAction` artık isteğe bağlı bir `reference`
+alır). `reverseAction` bir `Idempotency-Key` **istemez**: bir işlem bir kez geri
+alınır, tekrar `duplicate: true` döner.
+
+```ts
+const geri = await rewloy.reverseAction({
+  params: { serial },
+  body: { actionKey: `kasa3-z0187-fis${fisNo}`, locationId },   // ya da { reference: `fis-${fisNo}` }
+});
+console.log(geri.undone, geri.restored, geri.balance, geri.reopened, geri.duplicate);
+```
+
+`passAction`ın yanıtı kart türüne göre iki biçimdedir ve TypeScript'te bir
+birleşim türüdür: bakiyeli kartlarda `balance` (damga, puan, VIP, cashback,
+hediye kartı), kupon ve indirim kartında `status`, `uses` ve `usesLeft`
+(`'uses' in sonuc` ile ayırın). Kazanımlar (`earn-stamps`, `earn-points`,
+`visit`) `reverseAction`la değil `reverseSale`la geri alınır.
+
+**İstek sınırı.** Kimlikli her yanıt `RateLimit-Limit`, `RateLimit-Remaining` ve
+`RateLimit-Reset` başlıklarını taşır: `rewloy.request(...)` bunları
+`res.rateLimit` (`{ limit, remaining, reset }`) olarak verir, `429` hatası da
+(`RateLimitError`) `err.rateLimit` ve `err.retryAfter` taşır.
 
 ### `Idempotency-Key`
 
@@ -523,6 +573,15 @@ const sale = await rewloy.recordSale({
   body: { locationId, amountMinor: 4550, reference: `receipt-${receiptNo}` },  // amount in the card's currency, minor units
   idempotencyKey: `till3-z0187-r${receiptNo}`,
 });
+
+// A gift-card spend rung up by mistake? Void it by the key it was sent with:
+await rewloy.passAction({
+  params: { serial },
+  body: { action: 'spend', locationId, amountMinor: 2500 },
+  idempotencyKey: `till3-z0187-s${receiptNo}`,
+});
+const voided = await rewloy.reverseAction({ params: { serial }, body: { actionKey: `till3-z0187-s${receiptNo}` } });
+console.log(voided.undone, voided.restored, voided.balance);   // 'spend', 2500, the balance again
 ```
 
 - **Till.** `recordSale` writes a completed sale to a card (the card type and
@@ -530,6 +589,17 @@ const sale = await rewloy.recordSale({
   card's structured fields (`programName`, `currency`, `stamps`, `points`,
   `money`, `customer`); `reverseSale` takes a refunded sale back:
   `rewloy.reverseSale({ params: { serial }, body: { saleKey: key } })`.
+  A void is `reverseAction`: it takes back a `passAction` that was a mistake
+  (`spend`, `spend-points`, `redeem-stamps`, `redeem-reward`, `use`), found by
+  the `Idempotency-Key` you sent with it (`actionKey`) or its `reference`; it
+  needs no `Idempotency-Key` of its own, and a repeat answers `duplicate: true`:
+  `rewloy.reverseAction({ params: { serial }, body: { actionKey: key } })`.
+  A till that queues sales while offline sends `occurredAt` (ISO 8601 with the
+  UTC offset, not in the future) with `recordSale`, so the card's history shows
+  when the sale really happened; the queued `idempotencyKey` makes the resend
+  safe. `passAction` takes an optional `reference` too, and its answer is a union:
+  the balance-card answer (`balance`) or the coupon / discount-card answer
+  (`status`, `uses`, `usesLeft`).
 - **Idempotency keys.** `recordSale`, `passAction`, `sendCampaign` and
   `refundShopRedemption` need an `Idempotency-Key`: the API's OpenAPI document
   marks the header required for them, so `idempotencyKey` is a required
@@ -557,7 +627,9 @@ const sale = await rewloy.recordSale({
 - **Results.** It resolves to the answer's `data`: `{ data, meta }` for paged
   lists, `undefined` for 204, a `Blob` for files.
 - **The whole answer.** `rewloy.request(id, args)` returns `status`,
-  `headers`, `requestId`, `mode` (the `Rewloy-Mode` header: `live` or `test`) and `replayed` (`Idempotent-Replayed`).
+  `headers`, `requestId`, `rateLimit` (`{ limit, remaining, reset }` from the
+  `RateLimit-*` headers, `null` when absent), `mode` (the `Rewloy-Mode` header: `live` or `test`) and `replayed` (`Idempotent-Replayed`).
+  A `RewloyError` carries `rateLimit` too; a `RateLimitError` also has `retryAfter`.
 - **Pagination.** `rewloy.paginate('listCustomers', args)` iterates the items
   of every page.
 - **Streams.** `rewloy.liveFeed({ signal })` (or `rewloy.stream('liveFeed',

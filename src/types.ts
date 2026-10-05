@@ -89,6 +89,19 @@ export interface Page<T> {
   meta: PageMeta;
 }
 
+/**
+ * The request budget the API reports on every answer to an authenticated call
+ * (`RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`).
+ */
+export interface RateLimitInfo {
+  /** `RateLimit-Limit`: requests allowed per minute. */
+  limit: number;
+  /** `RateLimit-Remaining`: requests left in this minute. */
+  remaining: number;
+  /** `RateLimit-Reset`: seconds until the limit renews. */
+  reset: number;
+}
+
 /** The whole answer to a call (`Rewloy.request`). */
 export interface ApiResponse<T> {
   /** What `data` held (a `Blob` for files, `undefined` for 204). */
@@ -100,6 +113,8 @@ export interface ApiResponse<T> {
   headers: Headers;
   /** `x-request-id`: quote it to Rewloy support. */
   requestId: string | null;
+  /** The `RateLimit-*` headers; `null` when the answer carries none (anonymous calls). */
+  rateLimit: RateLimitInfo | null;
   /**
    * `Rewloy-Mode`: which mode answered (`test` for test keys, once the platform
    * has test mode); `null` when the answer does not say.

@@ -48,6 +48,11 @@ describe('error mapping', () => {
     assert.ok(err instanceof RateLimitError);
     assert.equal(err.name, 'RateLimitError');
     assert.equal(err.retryAfter, 7);
+    assert.equal(err.rateLimit, null);
+    answer = (res) => json(res, 429, apiError('RATE_LIMITED', 429, 'sınır'), { 'retry-after': '9', 'ratelimit-limit': '60', 'ratelimit-remaining': '0', 'ratelimit-reset': '9' });
+    err = await caught(client().listPrograms());
+    assert.ok(err instanceof RateLimitError);
+    assert.deepEqual(err.rateLimit, { limit: 60, remaining: 0, reset: 9 });
     answer = (res) => json(res, 429, apiError('RATE_LIMITED', 429, 'çok fazla canlı bağlantı', { retryAfterSec: 12 }));
     err = await caught(client().listPrograms());
     assert.ok(err instanceof RateLimitError && err.retryAfter === 12);

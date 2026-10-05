@@ -7,7 +7,7 @@
  * ```
  */
 
-export { Rewloy, DEFAULT_BASE_URL } from './client.ts';
+export { Rewloy, DEFAULT_BASE_URL, parseRateLimit } from './client.ts';
 export type { RewloyOptions } from './client.ts';
 export { RewloyError, RateLimitError, RewloyConnectionError, RewloyTimeoutError } from './errors.ts';
 export type { RewloyErrorInit } from './errors.ts';
@@ -16,7 +16,7 @@ export type { ServerSentEvent } from './sse.ts';
 export { verifyWebhook, signWebhook, WebhookSignatureError } from './webhooks.ts';
 export type { WebhookEvent, PassEventData, VerifyWebhookOptions, SignWebhookOptions, WebhookSignatureReason } from './webhooks.ts';
 export { OPERATIONS, ERROR_TITLES, API_VERSION } from './generated/operations.ts';
-export type { ApiResponse, AuthKind, HttpMethod, OperationMeta, Page, RequestOptions, ResponseKind, StreamOptions } from './types.ts';
+export type { ApiResponse, AuthKind, HttpMethod, OperationMeta, Page, RateLimitInfo, RequestOptions, ResponseKind, StreamOptions } from './types.ts';
 export type * from './generated/types.ts';
 export { VERSION } from './version.ts';
 

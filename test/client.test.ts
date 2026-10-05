@@ -49,7 +49,9 @@ describe('requests', () => {
       if (url.startsWith('/v1/developers/keys/')) { res.writeHead(204, { 'x-request-id': 'r-204' }); res.end(); return; }
       if (url.endsWith('/map.png')) { res.writeHead(200, { 'content-type': 'image/png' }); res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47])); return; }
       if (url === '/v1/openapi.json') return json(res, 200, { openapi: '3.1.0', paths: {} });
-      if (url === '/v1/campaigns' && req.method === 'POST') return json(res, 201, { data: { id: 'c1' } }, { 'idempotent-replayed': 'true', 'rewloy-mode': 'test', 'x-request-id': 'r-campaign' });
+      if (url === '/v1/campaigns' && req.method === 'POST') return json(res, 201, { data: { id: 'c1' } }, { 'idempotent-replayed': 'true', 'rewloy-mode': 'test', 'x-request-id': 'r-campaign', 'ratelimit-limit': '120', 'ratelimit-remaining': '117', 'ratelimit-reset': '41' });
+      if (url.endsWith('/actions/reverse')) return json(res, 200, { data: { type: 'giftcard', undone: 'spend', restored: 5000, balance: 5000, uses: null, usesLeft: null, status: 'active', reopened: false, duplicate: false, rewardReady: false, rewardsReady: 0 } });
+      if (url.endsWith('/actions') && req.method === 'POST') return json(res, 200, { data: { status: 'active', duplicate: false, uses: 3, usesLeft: 2 } });
       return json(res, 200, { data: { ok: true } });
     });
   });
@@ -204,11 +206,31 @@ describe('requests', () => {
     assert.equal(res.requestId, 'r-campaign');
     assert.equal(res.mode, 'test');
     assert.equal(res.replayed, true);
+    assert.deepEqual(res.rateLimit, { limit: 120, remaining: 117, reset: 41 });
     assert.ok(res.headers instanceof Headers);
     const list = await c.request('listCustomers');
     assert.deepEqual(list.meta, { page: 1, pageSize: 50, total: 1 });
     assert.equal(list.mode, null);
+    assert.equal(list.rateLimit, null, 'no RateLimit headers, no rateLimit');
     assert.equal(list.replayed, false);
+  });
+
+  it('reverses a till action without an Idempotency-Key, and narrows passAction\'s two answers', async () => {
+    const c = new Rewloy({ apiKey: KEY, baseUrl: s.url });
+    const back = await c.reverseAction({ params: { serial: SERIAL }, body: { actionKey: 'kasa3-z0187-fis0042', locationId: LOCATION } });
+    assert.equal(back.undone, 'spend');
+    assert.equal(back.restored, 5000);
+    assert.equal(last().method, 'POST');
+    assert.equal(last().url, `/v1/passes/${SERIAL}/actions/reverse`);
+    assert.equal(last().headers['idempotency-key'], undefined, 'the API does not ask for one');
+    assert.deepEqual(JSON.parse(last().body), { actionKey: 'kasa3-z0187-fis0042', locationId: LOCATION });
+
+    const use = await c.passAction({ params: { serial: SERIAL }, body: { action: 'use', locationId: LOCATION }, idempotencyKey: 'kasa3-z0187-fis0043' });
+    // A union, not any: `uses` exists only on the coupon / discount-card answer.
+    const balance: number | null = 'balance' in use ? use.balance : null;
+    const usesLeft: number | null = 'uses' in use ? use.usesLeft : null;
+    assert.equal(balance, null);
+    assert.equal(usesLeft, 2);
   });
 
   it('opens streams through their methods, not request()', async () => {

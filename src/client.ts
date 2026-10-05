@@ -10,7 +10,7 @@ import { RewloyMethods } from './generated/methods.ts';
 import { ERROR_TITLES, OPERATIONS } from './generated/operations.ts';
 import type { OperationId, Operations, PagedOperationId, StreamOperationId } from './generated/types.ts';
 import { EventStream } from './sse.ts';
-import type { ApiResponse, AuthKind, OperationMeta, Page, RequestOptions, StreamOptions } from './types.ts';
+import type { ApiResponse, AuthKind, OperationMeta, Page, RateLimitInfo, RequestOptions, StreamOptions } from './types.ts';
 import { VERSION } from './version.ts';
 
 export const DEFAULT_BASE_URL = 'https://app.rewloy.com';
@@ -119,6 +119,19 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
   if (/^\d+(\.\d+)?$/.test(v)) return Math.round(Number(v) * 1000);
   const at = Date.parse(v);
   return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+/** The `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` headers; `null` unless all three are numbers. */
+export function parseRateLimit(headers: Headers | null | undefined): RateLimitInfo | null {
+  if (!headers) return null;
+  const read = (name: string): number | null => {
+    const v = headers.get(name)?.trim();
+    return v && /^\d+$/.test(v) ? Number(v) : null;
+  };
+  const limit = read('ratelimit-limit');
+  const remaining = read('ratelimit-remaining');
+  const reset = read('ratelimit-reset');
+  return limit === null || remaining === null || reset === null ? null : { limit, remaining, reset };
 }
 
 /** Exponential backoff with jitter for the retry after attempt `attempt` (0-based). */
@@ -247,7 +260,7 @@ export class Rewloy extends RewloyMethods {
     const { res, data, meta } = await this.#exchange(id, op, args[0] as AnyArgs | undefined);
     return {
       data: data as Operations[K]['data'], meta, status: res.status, headers: res.headers,
-      requestId: res.headers.get('x-request-id'), mode: res.headers.get('rewloy-mode'),
+      requestId: res.headers.get('x-request-id'), rateLimit: parseRateLimit(res.headers), mode: res.headers.get('rewloy-mode'),
       replayed: res.headers.get('idempotent-replayed') === 'true',
     };
   }
@@ -449,7 +462,7 @@ export class Rewloy extends RewloyMethods {
   #invalid(id: OperationId, res: Response, body: unknown): RewloyError {
     return new RewloyError({
       status: res.status, code: 'INVALID_RESPONSE', detail: `the answer is not the JSON the API documents (${res.headers.get('content-type') ?? 'no content type'})`,
-      requestId: res.headers.get('x-request-id'), body, headers: res.headers, operation: id,
+      requestId: res.headers.get('x-request-id'), body, headers: res.headers, rateLimit: parseRateLimit(res.headers), operation: id,
     });
   }
 
@@ -464,7 +477,7 @@ export class Rewloy extends RewloyMethods {
       detail: e && typeof e.message === 'string' ? e.message : res.statusText || `HTTP ${String(res.status)}`,
       details: e?.details, docs: e && typeof e.docs === 'string' ? e.docs : null,
       requestId: res.headers.get('x-request-id') ?? (e && typeof e.requestId === 'string' ? e.requestId : null),
-      body: parsed, headers: res.headers, operation: id,
+      body: parsed, headers: res.headers, rateLimit: parseRateLimit(res.headers), operation: id,
     };
     if (res.status === 429) {
       const header = parseRetryAfter(res.headers.get('retry-after'));

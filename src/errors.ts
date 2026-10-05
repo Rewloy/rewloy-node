@@ -5,6 +5,7 @@
  */
 
 import type { ErrorCode } from './generated/types.ts';
+import type { RateLimitInfo } from './types.ts';
 
 export interface RewloyErrorInit {
   status: number;
@@ -16,6 +17,7 @@ export interface RewloyErrorInit {
   requestId?: string | null | undefined;
   body?: unknown;
   headers?: Headers | null | undefined;
+  rateLimit?: RateLimitInfo | null | undefined;
   operation?: string | null | undefined;
   cause?: unknown;
 }
@@ -52,6 +54,8 @@ export class RewloyError extends Error {
   /** The parsed answer body (or its text, when it is not JSON). */
   readonly body: unknown;
   readonly headers: Headers | null;
+  /** The `RateLimit-*` headers of the answer; `null` when it carried none. */
+  readonly rateLimit: RateLimitInfo | null;
   /** The operationId of the call. */
   readonly operation: string | null;
 
@@ -68,6 +72,7 @@ export class RewloyError extends Error {
     this.requestId = init.requestId ?? null;
     this.body = init.body;
     this.headers = init.headers ?? null;
+    this.rateLimit = init.rateLimit ?? null;
     this.operation = init.operation ?? null;
   }
 }
