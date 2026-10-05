@@ -377,9 +377,15 @@ function argsInterface(op: Op, e: Emitter): string {
   return `${head}export interface ${op.type}Args extends ${bases} {\n${lines.join('\n')}\n}\n`;
 }
 
-/** No required property at the top level: `{}` is a valid body. */
+/**
+ * No required property at the top level: `{}` is a valid body. A union (`oneOf` / `anyOf`) takes `{}` when any of its
+ * shapes does; one whose shapes all require something (createApiKey's two key shapes) does not.
+ */
 function isRequiredFree(schema: Schema): boolean {
-  return typeof schema !== 'object' || !Array.isArray(schema.required) || schema.required.length === 0;
+  if (typeof schema !== 'object') return true;
+  const shapes = (Array.isArray(schema.oneOf) ? schema.oneOf : Array.isArray(schema.anyOf) ? schema.anyOf : undefined) as Schema[] | undefined;
+  if (shapes && shapes.length > 0) return shapes.some((s) => isRequiredFree(s));
+  return !Array.isArray(schema.required) || schema.required.length === 0;
 }
 
 function paramsInterface(name: string, params: Param[], e: Emitter, description: string): string {

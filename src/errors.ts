@@ -43,8 +43,10 @@ export class RewloyError extends Error {
   readonly detail: string;
   /**
    * The API's `error.details`, when it sent any: for `VALIDATION` a list of
-   * `{ field, rule, message }`, for others what the catalogue says (`left`,
-   * `channels`, `request`…).
+   * `{ field, rule, message, reason? }` (`reason` says which limit a rule hit;
+   * for `occurredAt`: `in_future`, `too_old`, `before_issue` or `invalid`: treat
+   * an unknown reason as `invalid`), for others what the catalogue says
+   * (`left`, `channels`, `request`…).
    */
   readonly details: unknown;
   /** Where the catalogue explains the code (`error.docs`). */
