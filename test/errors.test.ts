@@ -16,7 +16,7 @@ describe('error mapping', () => {
 
   it('maps an API error body', async () => {
     answer = (res) => json(res, 409, apiError('INSUFFICIENT_BALANCE', 409, 'bakiye yetersiz: 40,00 ₺ var'), { 'x-request-id': '0192f7c1-8b2e-7a31-9c1d-000000000009' });
-    const err = await caught(client().passAction({ params: { serial: SERIAL }, body: { action: 'spend', locationId: LOCATION, amountMinor: 5000 } }));
+    const err = await caught(client().passAction({ params: { serial: SERIAL }, body: { action: 'spend', locationId: LOCATION, amountMinor: 5000 }, idempotencyKey: 'fis-000123' }));
     assert.equal(err.name, 'RewloyError');
     assert.ok(!(err instanceof RateLimitError));
     assert.equal(err.status, 409);
@@ -36,7 +36,7 @@ describe('error mapping', () => {
   it('keeps the validation details', async () => {
     const details = [{ field: 'body', rule: 'maxLength', message: 'en fazla 180 karakter olmalı' }];
     answer = (res) => json(res, 400, apiError('VALIDATION', 400, 'Gönderilen bilgiler geçersiz (gövde): body en fazla 180 karakter olmalı', details));
-    const err = await caught(client().sendCampaign({ body: { body: 'x'.repeat(200) } }));
+    const err = await caught(client().sendCampaign({ body: { body: 'x'.repeat(200) }, idempotencyKey: 'kampanya-0001' }));
     assert.equal(err.code, 'VALIDATION');
     assert.deepEqual(err.details, details);
     assert.equal(err.title, 'Gönderilen bilgiler geçersiz');

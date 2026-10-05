@@ -1,6 +1,6 @@
 {
   "name": "@rewloy/node",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Rewloy API için resmî Node.js ve TypeScript kütüphanesi / The official Node.js and TypeScript library for the Rewloy API",
   "license": "MIT",
   "author": "Rewloy",

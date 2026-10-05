@@ -126,13 +126,9 @@ describe('retries', () => {
     const { sleep } = recordingSleep();
     try {
       const c = new Rewloy({ apiKey: KEY, baseUrl: s.url, sleep });
-      assert.deepEqual(await c.passAction(action), { balance: 3, duplicate: false });
+      assert.deepEqual(await c.passAction({ ...action, idempotencyKey: 'fis-42-0001' }), { balance: 3, duplicate: false });
       assert.equal(s.requests.length, 2);
-      const keys = s.requests.map((r) => r.headers['idempotency-key']);
-      assert.ok(typeof keys[0] === 'string' && keys[0].length === 36);
-      assert.equal(keys[1], keys[0]);
-      await c.passAction({ ...action, idempotencyKey: 'fis-42-0001' });
-      assert.equal(s.requests[2]!.headers['idempotency-key'], 'fis-42-0001');
+      assert.deepEqual(s.requests.map((r) => r.headers['idempotency-key']), ['fis-42-0001', 'fis-42-0001']);
     } finally {
       await s.close();
     }

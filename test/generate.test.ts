@@ -113,6 +113,16 @@ describe('the generator on a fixture', () => {
     assert.match(methods, /forgetThing\(args: T\.ForgetThingArgs\): Promise<void> \{/);
   });
 
+  it('makes the idempotencyKey argument required where the document requires the header', () => {
+    assert.match(files['types.ts']!, /export interface ForgetThingArgs extends RequestOptions \{[^}]*idempotencyKey\?: string \| undefined;/);
+    const required = fixture();
+    const forget = (required.paths as Record<string, Record<string, { parameters: { name: string; required?: boolean }[] }>>)['/v1/things/{id}/events']!.delete!;
+    forget.parameters.find((p) => p.name === 'Idempotency-Key')!.required = true;
+    const out = Object.fromEntries(generate(required).map((f) => [f.path.split('/').pop()!, f.content]));
+    assert.match(out['types.ts']!, /export interface ForgetThingArgs extends RequestOptions \{[^}]*\n {2}idempotencyKey: string;/);
+    assert.match(out['operations.ts']!, /forgetThing: .*idempotency: 'required'/);
+  });
+
   it('refuses what it cannot generate', () => {
     assert.throws(() => generate({}), /not an OpenAPI 3 document/);
     assert.throws(() => generate({ openapi: '3.1.0', paths: {} }), /no operations/);

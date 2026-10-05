@@ -358,8 +358,11 @@ function argsInterface(op: Op, e: Emitter): string {
     member('The JSON body.', `body${required ? '' : '?'}: ${op.type}Body;`);
   }
   if (op.idempotency) {
-    member([op.idempotency.description ?? '', '`Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.'].filter(Boolean).join('\n\n'),
-      'idempotencyKey?: string | undefined;');
+    const note = op.idempotency.required
+      ? '`Idempotency-Key`, required: 8–64 printable ASCII characters. The client never makes one up (a generated key would not survive a restart of your app); it sends this one on every retry of the call.'
+      : '`Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.';
+    member([op.idempotency.description ?? '', note].filter(Boolean).join('\n\n'),
+      op.idempotency.required ? 'idempotencyKey: string;' : 'idempotencyKey?: string | undefined;');
   }
   if (op.merchant) {
     member([op.merchant.description ?? '', '`Rewloy-Merchant`. Defaults to the client\'s `merchant`.'].filter(Boolean).join('\n\n'),

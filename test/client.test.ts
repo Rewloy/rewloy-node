@@ -121,12 +121,57 @@ describe('requests', () => {
     assert.equal(last().headers['content-type'], undefined);
   });
 
-  it('generates an Idempotency-Key when none is given, and sends the given one', async () => {
+  it('generates an Idempotency-Key for an operation where it is optional, and sends the given one', async () => {
     const c = new Rewloy({ apiKey: KEY, baseUrl: s.url });
-    await c.passAction({ params: { serial: SERIAL }, body: { action: 'earn-stamps', locationId: LOCATION, count: 2 } });
+    const body = { programId: 'p1', name: 'Ayşe' };
+    await c.issuePass({ body });
     assert.match(String(last().headers['idempotency-key']), UUID);
-    await c.passAction({ params: { serial: SERIAL }, body: { action: 'earn-stamps', locationId: LOCATION }, idempotencyKey: 'fis-000123' });
+    await c.issuePass({ body, idempotencyKey: 'kayit-000123' });
+    assert.equal(last().headers['idempotency-key'], 'kayit-000123');
+  });
+
+  it('requires the Idempotency-Key where the API does, and never makes one up', async () => {
+    const c = new Rewloy({ apiKey: KEY, baseUrl: s.url });
+    const before = s.requests.length;
+    const call = { params: { serial: SERIAL }, body: { action: 'earn-stamps' as const, locationId: LOCATION, count: 2 } };
+    await assert.rejects(c.passAction(call as never), /passAction needs idempotencyKey/);
+    await assert.rejects(c.request('sendCampaign', { body: { body: 'Merhaba' } } as never), /sendCampaign needs idempotencyKey/);
+    assert.equal(s.requests.length, before, 'nothing was sent');
+    await c.passAction({ ...call, idempotencyKey: 'fis-000123' });
     assert.equal(last().headers['idempotency-key'], 'fis-000123');
+  });
+
+  it('refuses an Idempotency-Key that cannot be a header value, before sending', async () => {
+    const c = new Rewloy({ apiKey: KEY, baseUrl: s.url });
+    const before = s.requests.length;
+    const call = { params: { serial: SERIAL }, body: { action: 'earn-stamps' as const, locationId: LOCATION } };
+    for (const bad of ['fiş-000123-ğ', 'with space 123', 'kısa', 'a'.repeat(65), '', 'tab\there-123', 'satir\nsonu-123']) {
+      await assert.rejects(c.passAction({ ...call, idempotencyKey: bad }), (err: unknown) => {
+        assert.ok(err instanceof TypeError, `TypeError for ${JSON.stringify(bad)}`);
+        assert.match(err.message, /Idempotency-Key yalnız ASCII karakterler içerebilir/);
+        assert.match(err.message, /printable ASCII/);
+        return true;
+      }, JSON.stringify(bad));
+    }
+    await assert.rejects(c.issuePass({ body: { programId: 'p1' }, idempotencyKey: 'çiçek-çiçek-1' }), /Idempotency-Key yalnız ASCII/);
+    assert.equal(s.requests.length, before, 'nothing was sent');
+    for (const good of ['12345678', 'a'.repeat(64), 'kasa3-z0187-fis0042', '!~#$%&()*+,-./:;<=>?@[]^_{|}']) {
+      await c.passAction({ ...call, idempotencyKey: good });
+      assert.equal(last().headers['idempotency-key'], good);
+    }
+  });
+
+  it('accepts the base URL with or without /v1', async () => {
+    for (const suffix of ['', '/', '/v1', '/v1/', '//v1//']) {
+      const c = new Rewloy({ apiKey: KEY, baseUrl: `${s.url}${suffix}` });
+      assert.equal(c.baseUrl, s.url, JSON.stringify(suffix));
+      await c.getPass({ params: { serial: SERIAL } });
+      assert.equal(last().url, `/v1/passes/${SERIAL}`);
+    }
+    assert.equal(new Rewloy({ baseUrl: 'https://app.rewloy.com/v1' }).baseUrl, 'https://app.rewloy.com');
+    assert.equal(new Rewloy({ baseUrl: 'https://app.rewloy.com/v1/' }).baseUrl, 'https://app.rewloy.com');
+    assert.equal(new Rewloy({ baseUrl: 'https://proxy.example.com/rewloy/v1' }).baseUrl, 'https://proxy.example.com/rewloy');
+    assert.equal(new Rewloy({ baseUrl: 'https://proxy.example.com/rewloy' }).baseUrl, 'https://proxy.example.com/rewloy');
   });
 
   it('encodes path parameters and the query', async () => {
@@ -152,7 +197,7 @@ describe('requests', () => {
 
   it('gives the whole answer through request()', async () => {
     const c = new Rewloy({ apiKey: KEY, baseUrl: s.url });
-    const res = await c.request('sendCampaign', { body: { body: 'Bu hafta kahveler 2 damga!' } });
+    const res = await c.request('sendCampaign', { body: { body: 'Bu hafta kahveler 2 damga!' }, idempotencyKey: 'kampanya-2026-10-03' });
     assert.equal(res.status, 201);
     assert.deepEqual(res.data, { id: 'c1' });
     assert.equal(res.meta, undefined);

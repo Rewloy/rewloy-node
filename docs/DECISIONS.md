@@ -83,9 +83,15 @@ revisited; most are a line to change.
       the caller (a 15-minute lockout is not slept through).
 16. **Timeouts.** The timeout is 60 s per attempt, covering the whole body.
     For a stream it covers only the headers.
-17. **Idempotency keys** are UUID v4 (`node:crypto`). A key is generated for
-    any operation that declares the header, so `optional` ones would retry
-    safely too.
+17. **Idempotency keys.** Where the API's document marks the header
+    `required` (`recordSale`, `passAction`, `sendCampaign`,
+    `refundShopRedemption`) `idempotencyKey` is a required argument and a call
+    without it throws a `TypeError` before sending: a random key would defeat
+    safe retries across a restart of the caller's process. Where it is
+    `optional` the client generates a UUID v4 (`node:crypto`) and reuses it for
+    every retry of the call. A key given by the caller must be printable ASCII
+    (0x21–0x7E), 8–64 characters, checked before the request (a header value
+    cannot hold anything else; `fetch` would throw a bare `TypeError`).
 18. **One error hierarchy.**
     - `RewloyError` keeps `status`, `code`, `title`, `detail` (the API's
       `message`), `details`, `docs`, `requestId` (the header first),

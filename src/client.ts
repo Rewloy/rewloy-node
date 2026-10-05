@@ -127,6 +127,26 @@ export function backoff(attempt: number, random: () => number = Math.random): nu
   return Math.round(cap / 2 + random() * (cap / 2));
 }
 
+/**
+ * The base URL without trailing slashes and without a trailing `/v1`: the
+ * paths of the operations carry `/v1` themselves, and the documentation shows
+ * the address both ways (`https://app.rewloy.com` and `https://app.rewloy.com/v1`).
+ */
+export function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, '').replace(/\/v1$/, '').replace(/\/+$/, '');
+}
+
+/**
+ * An `Idempotency-Key` is 8–64 printable ASCII characters (0x21–0x7E): an HTTP
+ * header value cannot carry anything else, and `fetch` would throw a bare TypeError.
+ */
+export function checkIdempotencyKey(key: unknown): string {
+  if (typeof key !== 'string' || !/^[\x21-\x7e]{8,64}$/.test(key)) {
+    throw new TypeError('Rewloy: Idempotency-Key yalnız ASCII karakterler içerebilir (görünür karakterler, 8–64) / the Idempotency-Key must be printable ASCII (0x21–0x7E), 8–64 characters');
+  }
+  return key;
+}
+
 /** The URL a `Link` header gives for `rel="deprecation"` (else its first). */
 function deprecationLink(link: string | null): string | null {
   if (!link) return null;
@@ -202,7 +222,7 @@ export class Rewloy extends RewloyMethods {
     }
     if (options.merchant !== undefined && which !== 'staffSession') throw new TypeError('Rewloy: `merchant` goes with a staffSession');
     this.merchant = options.merchant ?? null;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     const f = options.fetch ?? globalThis.fetch;
@@ -318,7 +338,7 @@ export class Rewloy extends RewloyMethods {
     return `${this.baseUrl}${path}${qs ? `?${qs}` : ''}`;
   }
 
-  #headers(op: OperationMeta, a: AnyArgs, lastEventId: string | undefined): Headers {
+  #headers(id: OperationId, op: OperationMeta, a: AnyArgs, lastEventId: string | undefined): Headers {
     const h = new Headers();
     h.set('accept', op.stream ? 'text/event-stream' : op.response === 'json' || op.response === 'raw-json' ? 'application/json' : '*/*');
     if (this.#userAgent) h.set('user-agent', this.#userAgent);
@@ -329,10 +349,18 @@ export class Rewloy extends RewloyMethods {
     }
     const merchant = a.merchant ?? (this.credential === 'staff' ? this.merchant : null);
     if (op.merchant && merchant) h.set('rewloy-merchant', merchant);
-    if (op.idempotency) h.set('idempotency-key', a.idempotencyKey ?? randomUUID());
+    if (op.idempotency) {
+      if (a.idempotencyKey === undefined && op.idempotency === 'required') {
+        throw new TypeError(`Rewloy: ${id} needs idempotencyKey: Idempotency-Key gerekli, kütüphane uydurmaz (8–64 ASCII karakter) / the Idempotency-Key is required and is never generated for you (8–64 printable ASCII characters)`);
+      }
+      h.set('idempotency-key', a.idempotencyKey === undefined ? randomUUID() : checkIdempotencyKey(a.idempotencyKey));
+    }
     if (op.body) h.set('content-type', 'application/json');
     if (lastEventId) h.set('last-event-id', lastEventId);
-    for (const [k, v] of Object.entries(a.headers ?? {})) if (v !== undefined && v !== null) h.set(k, String(v));
+    for (const [k, v] of Object.entries(a.headers ?? {})) {
+      if (v === undefined || v === null) continue;
+      h.set(k, k.toLowerCase() === 'idempotency-key' ? checkIdempotencyKey(v) : String(v));
+    }
     return h;
   }
 
@@ -351,7 +379,7 @@ export class Rewloy extends RewloyMethods {
   async #exchange(id: OperationId, op: OperationMeta, args: AnyArgs | undefined, stream?: { lastEventId: string; controller: AbortController }): Promise<Exchange> {
     const a = args ?? {};
     const url = this.#url(id, op, a);
-    const headers = this.#headers(op, a, stream?.lastEventId);
+    const headers = this.#headers(id, op, a, stream?.lastEventId);
     const body = op.body ? JSON.stringify(a.body ?? {}) : undefined;
     const retryable = IDEMPOTENT_METHODS.has(op.method) || headers.has('idempotency-key');
     const maxRetries = Math.max(0, a.maxRetries ?? this.maxRetries);

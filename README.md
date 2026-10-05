@@ -52,7 +52,7 @@ işlemin gerektirdikleriyle:
 - `query`: sorgu parametreleri;
 - `body`: JSON gövde;
 - `merchant`: `Rewloy-Merchant` başlığı;
-- `idempotencyKey`: `Idempotency-Key` başlığı (satış, kasa işlemi ve kampanya);
+- `idempotencyKey`: `Idempotency-Key` başlığı (satış, kasa işlemi, kampanya ve mağaza iadesinde zorunlu);
 - `signal`, `timeoutMs`, `maxRetries`.
 
 Metot yanıttaki `data`yı döndürür. Sayfalı listelerde `{ data, meta }`,
@@ -86,7 +86,7 @@ Bir işlem istemcinin kimlik türünü kabul etmiyor ama kimliksiz de çalışı
 bir kimliği reddeder (`CREDENTIAL_NOT_ALLOWED`).
 
 Diğer seçenekler:
-- `baseUrl` (varsayılan `https://app.rewloy.com`; `/v1` olmadan, kütüphane ekler);
+- `baseUrl` (varsayılan `https://app.rewloy.com`; sonuna `/v1` eklemeniz ya da eklememeniz fark etmez: `https://app.rewloy.com/v1` de olur, kütüphane `/v1`i kendisi ekler);
 - `timeoutMs` (60000);
 - `maxRetries` (2);
 - `fetch`: kendi `fetch`iniz;
@@ -100,7 +100,7 @@ API'nin başka bir kopyasına (kendi staging ortamınız ya da bir vekil sunucu)
 ```ts
 const rewloy = new Rewloy({
   apiKey: process.env.REWLOY_API_KEY!,
-  baseUrl: 'https://rewloy-staging.ornek.com',   // /v1 olmadan
+  baseUrl: 'https://rewloy-staging.ornek.com',   // sonuna /v1 yazsanız da olur
 });
 ```
 
@@ -175,11 +175,19 @@ hiçbir şey yazılmaz.
 
 ### `Idempotency-Key`
 
-`recordSale`, `passAction` ve `sendCampaign` bir `Idempotency-Key` ister.
-Verilmezse kütüphane bir UUID üretir ve aynı çağrının her denemesinde aynısını
-gönderir; ama uygulama çöküp yeniden başlarsa yeni bir anahtar üretilir ve
-satış ikinci kez yazılabilir. Kasada anahtarı kendiniz üretip satışla birlikte
-saklayın:
+`recordSale`, `passAction`, `sendCampaign` ve `refundShopRedemption` bir
+`Idempotency-Key` **ister**: API'nin tanımında (OpenAPI) bu başlık bu işlemlerde
+zorunludur, bu yüzden `idempotencyKey` bu metotlarda zorunlu bir argümandır.
+Verilmezse kütüphane istek göndermeden `TypeError` fırlatır; **sizin yerinize
+anahtar üretmez**. Üretilmiş rastgele bir anahtar yalnızca tek çağrının yeniden
+denemelerini korurdu: uygulama çöküp yeniden başlarsa yeni bir anahtar çıkar ve
+satış ikinci kez yazılabilirdi. Anahtarı kendiniz üretip satışla birlikte
+saklayın. Anahtar 8–64 karakterlik görünür ASCII olmalıdır (0x21–0x7E: harf,
+rakam ve noktalama; boşluk, Türkçe harf ya da `fiş` gibi ASCII dışı karakter
+olmaz); aksi halde kütüphane yine istek göndermeden `TypeError` fırlatır.
+Başlığın isteğe bağlı olduğu işlemlerde (örneğin `issuePass`) anahtar verilmezse
+kütüphane bir UUID üretir ve aynı çağrının her denemesinde aynısını gönderir.
+
 - **Anahtar bir kimlik için kalıcı olarak tekildir** (8–64 karakter; defterden
   hiç silinmez). Aynı anahtarla aynı isteğin tekrarı ikinci kez yazmaz ve
   ilk sonucu `duplicate: true` ile döndürür. Aynı anahtar başka bir gövdeyle
@@ -522,14 +530,23 @@ const sale = await rewloy.recordSale({
   card's structured fields (`programName`, `currency`, `stamps`, `points`,
   `money`, `customer`); `reverseSale` takes a refunded sale back:
   `rewloy.reverseSale({ params: { serial }, body: { saleKey: key } })`.
-- **Idempotency keys.** `recordSale`, `passAction` and `sendCampaign` need an
-  `Idempotency-Key`. A key is unique **for good per credential**: do not use the
+- **Idempotency keys.** `recordSale`, `passAction`, `sendCampaign` and
+  `refundShopRedemption` need an `Idempotency-Key`: the API's OpenAPI document
+  marks the header required for them, so `idempotencyKey` is a required
+  argument and the client throws a `TypeError` before sending if it is missing.
+  It never makes one up for you (a generated key would not survive a restart of
+  your app). The key must be 8–64 printable ASCII characters (0x21–0x7E); a
+  non-ASCII key such as `fiş-0042` is refused client-side, with a `TypeError`,
+  before anything is sent. Where the header is optional (for example
+  `issuePass`) the client still generates a UUID and reuses it on every retry
+  of the call. A key is unique **for good per credential**: do not use the
   receipt number alone (fiscal receipt numbers restart after the Z report) but
   register + Z number + receipt number, or a UUID stored with the sale. The
-  receipt number goes in `reference`. A generated key only covers the retries
-  of one call, not a restart of your app.
+  receipt number goes in `reference`.
 - **Base URL.** `new Rewloy({ apiKey, baseUrl: 'https://staging.example.com' })`
-  (the origin, without `/v1`). Default `https://app.rewloy.com`.
+  or `baseUrl: 'https://staging.example.com/v1'`: with or without a trailing
+  `/v1` (and trailing slashes), the client appends `/v1/...` itself. Default
+  `https://app.rewloy.com`.
 - **Test mode.** Open the test environment (panel → Developer, or
   `POST /v1/test/environment`) and use its `rwk_test_` key at the same address:
   a separate test business that sends nothing and never reaches real

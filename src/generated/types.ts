@@ -272,7 +272,7 @@ export interface IssuePassArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
   /**
@@ -471,9 +471,9 @@ export interface PassActionArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`, required: 8–64 printable ASCII characters. The client never makes one up (a generated key would not survive a restart of your app); it sends this one on every retry of the call.
    */
-  idempotencyKey?: string | undefined;
+  idempotencyKey: string;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -543,9 +543,9 @@ export interface RecordSaleArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`, required: 8–64 printable ASCII characters. The client never makes one up (a generated key would not survive a restart of your app); it sends this one on every retry of the call.
    */
-  idempotencyKey?: string | undefined;
+  idempotencyKey: string;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -1079,7 +1079,7 @@ export interface HolderLoginArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
 }
@@ -4927,9 +4927,9 @@ export interface SendCampaignArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`, required: 8–64 printable ASCII characters. The client never makes one up (a generated key would not survive a restart of your app); it sends this one on every retry of the call.
    */
-  idempotencyKey?: string | undefined;
+  idempotencyKey: string;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -9015,9 +9015,9 @@ export interface RefundShopRedemptionArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`, required: 8–64 printable ASCII characters. The client never makes one up (a generated key would not survive a restart of your app); it sends this one on every retry of the call.
    */
-  idempotencyKey?: string | undefined;
+  idempotencyKey: string;
   /**
    * Ekip oturumu birden fazla işletmede koltuk taşıyorsa hangi işletme için olduğu (tek işletmede gerekmez).
    *
@@ -11831,7 +11831,7 @@ export interface AddHolderEmailArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
 }
@@ -11891,7 +11891,7 @@ export interface AddHolderPhoneArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
 }
@@ -12015,7 +12015,7 @@ export interface ReplaceHolderIdentityArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
 }
@@ -12631,7 +12631,7 @@ export interface StartHolderRecoveryArgs extends RequestOptions {
   /**
    * Aynı işlemin iki kez yapılmasını önler: aynı anahtarla tekrar, ilk sonucu döndürür.
    *
-   * `Idempotency-Key`. When omitted, the client generates a UUID and sends the same one on every retry of this call.
+   * `Idempotency-Key`: 8–64 printable ASCII characters. When omitted, the client generates a UUID and sends the same one on every retry of this call.
    */
   idempotencyKey?: string | undefined;
 }
