@@ -10438,6 +10438,10 @@ export interface ListWebhooksItem {
     id: string;
     name: string;
   } | null;
+  /** Açık webhook bekletiliyor: alıcı art arda 2 kez `5xx`, `429` verdi ya da yanıt vermedi; teslimler bu ana kadar ertelenir, sonra kendiliğinden yeniden denenir (60 saniye). Bekletilmiyorsa ya da webhook kapalıysa null (1.2.0). */
+  pausedUntil: string | null;
+  /** Webhook'u kurallar kapattı ve bekleyen teslimleri saklanıyor: bu andan önce açılırsa (`PATCH` `{ "active": true }`) kaldığı yerden devam eder, saklananlar hemen gönderilir ve kapalıyken olan olaylar da gelir. Kapanıştan 24 saat sonrası. Açıksa, bir kişi ya da anahtar kapattıysa ya da süre geçtiyse null (1.2.0). */
+  resumableUntil: string | null;
 }
 
 /** The `data` of `listWebhooks`'s answer. */
@@ -10491,6 +10495,10 @@ export interface CreateWebhookData {
       id: string;
       name: string;
     } | null;
+    /** Açık webhook bekletiliyor: alıcı art arda 2 kez `5xx`, `429` verdi ya da yanıt vermedi; teslimler bu ana kadar ertelenir, sonra kendiliğinden yeniden denenir (60 saniye). Bekletilmiyorsa ya da webhook kapalıysa null (1.2.0). */
+    pausedUntil: string | null;
+    /** Webhook'u kurallar kapattı ve bekleyen teslimleri saklanıyor: bu andan önce açılırsa (`PATCH` `{ "active": true }`) kaldığı yerden devam eder, saklananlar hemen gönderilir ve kapalıyken olan olaylar da gelir. Kapanıştan 24 saat sonrası. Açıksa, bir kişi ya da anahtar kapattıysa ya da süre geçtiyse null (1.2.0). */
+    resumableUntil: string | null;
   };
   /** whsec_…; yalnız bu yanıtta */
   secret: string;
@@ -10546,6 +10554,10 @@ export interface GetWebhookData {
     id: string;
     name: string;
   } | null;
+  /** Açık webhook bekletiliyor: alıcı art arda 2 kez `5xx`, `429` verdi ya da yanıt vermedi; teslimler bu ana kadar ertelenir, sonra kendiliğinden yeniden denenir (60 saniye). Bekletilmiyorsa ya da webhook kapalıysa null (1.2.0). */
+  pausedUntil: string | null;
+  /** Webhook'u kurallar kapattı ve bekleyen teslimleri saklanıyor: bu andan önce açılırsa (`PATCH` `{ "active": true }`) kaldığı yerden devam eder, saklananlar hemen gönderilir ve kapalıyken olan olaylar da gelir. Kapanıştan 24 saat sonrası. Açıksa, bir kişi ya da anahtar kapattıysa ya da süre geçtiyse null (1.2.0). */
+  resumableUntil: string | null;
 }
 
 /** Arguments of `getWebhook`. */
@@ -10601,6 +10613,10 @@ export interface SetWebhookStatusData {
     id: string;
     name: string;
   } | null;
+  /** Açık webhook bekletiliyor: alıcı art arda 2 kez `5xx`, `429` verdi ya da yanıt vermedi; teslimler bu ana kadar ertelenir, sonra kendiliğinden yeniden denenir (60 saniye). Bekletilmiyorsa ya da webhook kapalıysa null (1.2.0). */
+  pausedUntil: string | null;
+  /** Webhook'u kurallar kapattı ve bekleyen teslimleri saklanıyor: bu andan önce açılırsa (`PATCH` `{ "active": true }`) kaldığı yerden devam eder, saklananlar hemen gönderilir ve kapalıyken olan olaylar da gelir. Kapanıştan 24 saat sonrası. Açıksa, bir kişi ya da anahtar kapattıysa ya da süre geçtiyse null (1.2.0). */
+  resumableUntil: string | null;
 }
 
 /** Arguments of `setWebhookStatus`. */
@@ -10759,6 +10775,10 @@ export interface RotateWebhookSecretData {
       id: string;
       name: string;
     } | null;
+    /** Açık webhook bekletiliyor: alıcı art arda 2 kez `5xx`, `429` verdi ya da yanıt vermedi; teslimler bu ana kadar ertelenir, sonra kendiliğinden yeniden denenir (60 saniye). Bekletilmiyorsa ya da webhook kapalıysa null (1.2.0). */
+    pausedUntil: string | null;
+    /** Webhook'u kurallar kapattı ve bekleyen teslimleri saklanıyor: bu andan önce açılırsa (`PATCH` `{ "active": true }`) kaldığı yerden devam eder, saklananlar hemen gönderilir ve kapalıyken olan olaylar da gelir. Kapanıştan 24 saat sonrası. Açıksa, bir kişi ya da anahtar kapattıysa ya da süre geçtiyse null (1.2.0). */
+    resumableUntil: string | null;
   };
   /** Yeni sır, whsec_…; yalnız bu yanıtta */
   secret: string;
@@ -14506,7 +14526,8 @@ export interface Operations {
       401: ErrorBody<'UNAUTHENTICATED' | 'INVALID_API_KEY' | 'TOKEN_INVALID' | 'MFA_REQUIRED'>;
       403: ErrorBody<'FORBIDDEN' | 'PLAN_FEATURE_MISSING' | 'CREDENTIAL_NOT_ALLOWED' | 'READ_ONLY'>;
       404: ErrorBody<'BATCH_NOT_FOUND'>;
-      410: ErrorBody<'BATCH_CLOSED' | 'TOKEN_INVALID'>;
+      409: ErrorBody<'PROGRAM_ARCHIVED'>;
+      410: ErrorBody<'BATCH_CLOSED' | 'BATCH_EXPIRED' | 'BATCH_FULL' | 'TOKEN_INVALID'>;
       429: ErrorBody<'RATE_LIMITED'>;
       500: ErrorBody<'INTERNAL'>;
     };
