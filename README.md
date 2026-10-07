@@ -597,10 +597,45 @@ npm run typecheck && npm run build && npm test
 ```
 
 - `src/generated/` elle düzenlenmez; üreteç `scripts/generator.ts`'tir.
-- Testler ağa çıkmaz: yerel bir sahte API ile çalışır. TypeScript'i doğrudan
+- `npm test` ağa çıkmaz: yerel bir sahte API ile çalışır (canlı testler ayrıdır: aşağıdaki "Canlı testler"). TypeScript'i doğrudan
   çalıştırdıkları için Node 22.18 ya da üstünü ister.
 - CI her gün canlı belgeyi okur ve bir değişiklik varsa bir pull request açar.
 - Kararlar: [docs/DECISIONS.md](docs/DECISIONS.md).
+
+## Canlı testler
+
+Kütüphaneyi gerçek bir Rewloy **dev** sunucusuna karşı uçtan uca sınar (her
+şey kütüphane üzerinden; ham HTTP yok). Her sürüm adayı canlıya çıkmadan önce
+dev sunucuda her istemci kütüphanesiyle bu testten geçer. `npm test` bunlara
+dokunmaz: `REWLOY_BASE_URL` ve `REWLOY_API_KEY` yoksa canlı testler atlanır.
+
+```sh
+REWLOY_BASE_URL=https://dev-sunucunuz REWLOY_API_KEY=rwk_test_… npm run test:live
+```
+
+| Değişken | |
+|---|---|
+| `REWLOY_BASE_URL` | Sunucunun adresi (`/v1` olmadan). |
+| `REWLOY_API_KEY` | Bir **test** anahtarı, `rwk_test_…`. Başka anahtar reddedilir. |
+| `REWLOY_STAFF_SESSION` | İsteğe bağlı: **gerçek** işletmenin ekip oturumu, `rws_…` (`login`). Yalnız sonda `resetTestEnvironment` için; yoksa sıfırlama alanı atlanır. |
+| `REWLOY_MERCHANT` | İsteğe bağlı: o oturum için gerçek işletmenin kimliği (birden çok işletmede koltuğu varsa). |
+
+Güvenlik: önce anahtar **gönderilmeden** `GET /v1/meta` çağrılır; `"environment"`
+`"dev"` değilse (ya da alan yoksa) hiçbir şey çalışmaz, çıkış kodu 2. İlk
+anahtarlı yanıt da `Rewloy-Mode: test` taşımalıdır. Sıfırlama, ekip oturumunun
+test ortamı anahtarın işletmesi değilse yapılmaz.
+
+Kapsam: `getMeta`/işletme/şubeler; programlar (damga ve hediye kartı oluştur,
+listele); kartlar (`issuePass`, `getPass`, `getPassTill`); `recordSale`
+(tekrar, `occurredAt`, bilinmeyen `lines` alanı), `passAction`, `reverseSale`,
+`reverseAction`, `listPassOperations` ve sayfalama; müşteri araması; kodlar
+(`createBatch`, `listBatches`, `listAllBatches`, `sendBatchLink` reddetmeleri,
+`closeBatch`); webhook'lar (oluştur, listele, sırrı yenile, sil, çözümlenmeyen
+adres); `Idempotency-Key`; `RateLimit-*` başlıkları; hata nesneleri (`code`,
+`status`, `requestId`) ve en sonda `resetTestEnvironment`. Oluşturduklarını
+temizler (webhook silinir, kod kapatılır, program arşivlenir). Alan başına
+geçti/kaldı özeti yazar; bir hata varsa çıkış kodu 1. Henüz kapsanmayanlar:
+[test/live/TODO.md](test/live/TODO.md).
 
 ## Belgeler
 
@@ -816,6 +851,43 @@ anyway. All four are typed in `Operations['sendBatchLink']['responses']`.
   `Sunset` and `Link`. The client emits one `DeprecationWarning`
   (`REWLOY_DEPRECATED`) per operation, and the generated method is marked
   `@deprecated`.
+
+### Live tests
+
+An end-to-end test of the library against a real Rewloy **dev** server,
+entirely through the library (no raw HTTP). Every release candidate passes it on
+the dev server, through every client library, before it goes live. `npm test`
+is unaffected: without `REWLOY_BASE_URL` and `REWLOY_API_KEY` the live tests are
+skipped.
+
+```sh
+REWLOY_BASE_URL=https://your-dev-server REWLOY_API_KEY=rwk_test_… npm run test:live
+```
+
+| Variable | |
+|---|---|
+| `REWLOY_BASE_URL` | The server's address (without `/v1`). |
+| `REWLOY_API_KEY` | A **test** key, `rwk_test_…`. Any other key is refused. |
+| `REWLOY_STAFF_SESSION` | Optional: a staff session (`rws_…`, from `login`) of the **real** business that owns the test business. Used only for `resetTestEnvironment` at the end; without it the reset area is skipped. |
+| `REWLOY_MERCHANT` | Optional: the real business's id for that session (when the person has seats in several). |
+
+Safety: `GET /v1/meta` is called first, **without** the key; unless
+`"environment"` is `"dev"` (a missing field counts as not dev) nothing runs and
+the exit code is 2. The first answer to the key must carry `Rewloy-Mode: test`
+too. The reset is refused unless the staff session's test environment is the
+key's business.
+
+Covered: `getMeta`, business and branches; programmes (a stamp and a gift card
+programme, listing); passes (`issuePass`, `getPass`, `getPassTill`);
+`recordSale` (replay, `occurredAt`, an unknown `lines` field), `passAction`,
+`reverseSale`, `reverseAction`, `listPassOperations` and pagination; customer
+search; codes (`createBatch`, `listBatches`, `listAllBatches`, `sendBatchLink`
+refusals, `closeBatch`); webhooks (create, list, rotate the secret, delete, an
+address that does not resolve); `Idempotency-Key`; the `RateLimit-*` headers;
+error objects (`code`, `status`, `requestId`); and `resetTestEnvironment` last.
+It cleans up what it creates (webhooks deleted, codes closed, programmes
+archived), prints passed/failed per area and exits non-zero on any failure.
+Not covered yet: [test/live/TODO.md](test/live/TODO.md).
 
 ### Security and licence
 

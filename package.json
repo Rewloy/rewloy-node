@@ -47,7 +47,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "build": "node scripts/build.mjs",
     "test": "node --test \"test/*.test.ts\"",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "test:live": "node scripts/live-tests.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
