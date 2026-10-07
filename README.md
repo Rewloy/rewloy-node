@@ -293,6 +293,100 @@ kütüphane bir UUID üretir ve aynı çağrının her denemesinde aynısını g
 - **Fiş numarası `reference` alanına** yazılır; müşterinin geçmişinde ve işlem
   dökümünde görünür.
 
+### Fiş satırları ve kazanım kuralları (API 1.3.0, kütüphane 0.3.0)
+
+`recordSale` fişin satırlarını `lines` ile alabilir ve programın **kazanım
+kuralları** varsa damgayı, puanı ya da cashback'i satırlara göre yazar ("her
+hazırlanan içeceğe bir damga, paketliye yok"). Satırsız satış 1.2.0'daki gibi
+çalışır; kuralı olmayan program satırlar gelse de eskisi gibi kazandırır.
+Her satış yanıtı satırlı gönderildiğinde `earn` taşır: kuralın adım adım açıklaması.
+
+```ts
+// Gruplar işletmenindir: kasanın gönderdiği kategorilerden kurulur.
+const icecekler = await rewloy.createEarnGroup({
+  body: { name: 'Hazırlanan içecekler', members: [{ effect: 'include', match: 'category', value: 'İçecek' }] },
+});
+const paketli = await rewloy.createEarnGroup({
+  body: { name: 'Paketli', members: [{ effect: 'include', match: 'category', value: 'Paketli' }] },
+});
+
+// Kurallar bir programındır. Okuduğunuz `revision` ile yazın (arada başkası yazdıysa 409 REVISION_CONFLICT).
+const kurallar = await rewloy.getEarnRules({ params: { id: programId } });
+await rewloy.putEarnRules({
+  params: { id: programId },
+  body: { revision: kurallar.revision, rules: [{ kind: 'stamp.perUnit', groupId: icecekler.id, stamps: 1, except: [paketli.id] }] },
+});
+
+const satirlar = [
+  { lineId: '1', name: 'Latte', sku: 'LATTE', category: 'İçecek > Sıcak', quantity: 2, unitPriceMinor: 9500 },
+  { lineId: '2', name: 'Su', category: 'Paketli', unitPriceMinor: 2000 },
+];
+// Önce önizleyin: hiçbir şey yazılmaz, Idempotency-Key istemez.
+const onizleme = await rewloy.previewSale({ params: { serial }, body: { locationId, amountMinor: 21000, lines: satirlar } });
+console.log(onizleme.credited, onizleme.earn?.rules.map((r) => r.text));   // 2, ['1 stamp for each item in …']
+
+const satis = await rewloy.recordSale({ params: { serial }, body: { locationId, amountMinor: 21000, lines: satirlar }, idempotencyKey: anahtar });
+for (const satir of satis.earn?.lines ?? []) console.log(satir.lineId, satir.status, satir.earned);   // earned | no_rule | zero_price | …
+```
+
+- `amountMinor` ödenen tutardır ve satırların toplamını aşamaz
+  (`422 LINES_TOTAL_MISMATCH`); bir satır liste fiyatından pahalı olamaz
+  (`422 LINE_AMOUNT_INVALID`); en çok 500 satır (`422 TOO_MANY_LINES`). `receiptDiscountMinor`
+  fişin tamamına yapılan indirimdir. Satırda bilinmeyen bir alan (`qty`)
+  `400 VALIDATION` alır.
+- Satırlar isteğin parmak izine girer: aynı anahtarla aynı satırlar bir tekrardır
+  (`duplicate: true`, ilk `earn`), başka satırlar `422 IDEMPOTENCY_KEY_REUSED`.
+- `previewEarn` kart olmadan bir programın kurallarını sınar; kaydedilmemiş bir
+  taslağı `ruleSet`, kartın o günkü durumunu `context` ile verebilirsiniz.
+  `listEarnTemplates` hazır kural setlerini (kahve dükkânı, bar, fırın, restoran) verir.
+- Kural değiştirmek: `createEarnRule`, `updateEarnRule`, `deleteEarnRule`;
+  hepsini kapatmak `deleteEarnRules`; her sürüm `listEarnRuleRevisions`'ta kalır.
+  Gruplar: `listEarnGroups`, `getEarnGroup`, `updateEarnGroup`, `deleteEarnGroup`
+  (bir kuralın kullandığı grup `409 GROUP_IN_USE`). Kasaların gönderdiği
+  kategoriler `listSeenLines` ve `listEarnSources` ile, bir kategoriyi uyarıdan
+  çıkarmak `ignoreSeenLine` / `unignoreSeenLine` ile.
+- **Satır iadesi.** Satırlarıyla yazılmış bir satışın yalnız bazı satırları
+  iade edildiyse `reverseSale`e `lines` verin. Satış kalan satırlarla,
+  satıldığı günün kurallarıyla yeniden yargılanır ve yalnız fark geri alınır.
+  Yanıt `earn` ve `linesLeft` taşır. Satırlarda kendi `idempotencyKey`'inizi
+  verin (verilmezse kütüphane bir UUID üretir ve yalnız bu çağrının
+  yeniden denemelerinde aynısını kullanır):
+
+```ts
+const iade = await rewloy.reverseSale({
+  params: { serial },
+  body: { saleKey: anahtar, lines: [{ lineId: '1', quantity: 1 }] },   // iki latteden biri
+  idempotencyKey: `iade-${fisNo}-latte`,
+});
+console.log(iade.reversed, iade.balance, iade.linesLeft);   // 404 LINE_NOT_FOUND, 409 LINE_ALREADY_REFUNDED
+```
+
+### Şube QR'ı, dondurma ve kodlar (API 1.3.0)
+
+- **Şube QR'ı.** Her şube (`getLocation`, `listLocations`) `qr` taşır
+  (`code`, `url`, `state`) ve `frozen`. QR'ın okutulunca açılan sayfasını kimliksiz
+  `publicBranch({ params: { code } })` okur; basılacak dosyalar `locationQrPng`,
+  `locationQrSvg`, `locationQrSheetPdf` ve `locationQrSheetSvg` ile bir `Blob` olarak gelir.
+  QR'ın listesi (`getLocationQrItems`, `putLocationQrItems`, `addQrItems`,
+  `previewLocationQr`) hangi kartların, hangi sırayla ve hangi günlerde
+  görüneceğini yazar. `holderBranch` ve `joinHolderBranch` Rewloy Cüzdan
+  oturumuyla (`holderSession`) çalışır.
+- **Şube dondurma.** `freezeLocation` yalnız ekip oturumu ve kişinin şifresiyle
+  çalışır (anahtarla `403 CREDENTIAL_NOT_ALLOWED`); `updateLocationFreeze`,
+  `cancelLocationFreeze`, `unfreezeLocation` anahtarla da olur;
+  `listLocationFreezes` geçmişi ve ücretsiz günleri verir. Donuk şubede kasa
+  işlemi `409 LOCATION_FROZEN`, her şube donukken şubesiz işlem
+  `409 BUSINESS_FROZEN` alır; geri almalar çalışır.
+- **Kodlar.** `updateBatch` bir kodu sonradan düzenler; `copyProgram` hediye
+  kartı, kupon ya da indirim kartının kopyasını yapar (sadakat kartı
+  `422 NOT_AN_INSTRUMENT`); `extendProgramCards` açık kartları yeni bir bitişe uzatır.
+- **Webhook olayları.** `pass.extended` (kartın bitişi ileri alındı: `reason`
+  `merchant` ya da `branch_frozen`, `from`, `to`), `location.frozen`,
+  `location.unfrozen`, `business.paused` ve `business.resumed`. Kart olayı
+  olmayan son dördünde `card` ve `customer_id` `null`dır. `pass.activity`
+  `adjust` olayı bir satış kısmen iade edildiyse `partial: true` taşır.
+  `WebhookEvent` bunları ayırt edilebilir birleşimde tipler.
+
 ## Sayfalama
 
 ```ts
@@ -432,7 +526,8 @@ app.register(async (scope) => {
 
 Başlıklar:
 - `Rewloy-Event`: olay türü (`pass.issued`, `pass.activity`, `pass.voided`,
-  `webhook.test`); gövdedeki `type` ile aynı.
+  `pass.extended`, `location.frozen`, `location.unfrozen`, `business.paused`,
+  `business.resumed`, `webhook.test`); gövdedeki `type` ile aynı.
 - `Rewloy-Delivery`: teslimin kimliği. Teslim "en az bir kez"dir: çift gelen
   teslimi bununla ayıklayın.
 
@@ -619,23 +714,31 @@ REWLOY_BASE_URL=https://dev-sunucunuz REWLOY_API_KEY=rwk_test_… npm run test:l
 | `REWLOY_API_KEY` | Bir **test** anahtarı, `rwk_test_…`. Başka anahtar reddedilir. |
 | `REWLOY_STAFF_SESSION` | İsteğe bağlı: **gerçek** işletmenin ekip oturumu, `rws_…` (`login`). Yalnız sonda `resetTestEnvironment` için; yoksa sıfırlama alanı atlanır. |
 | `REWLOY_MERCHANT` | İsteğe bağlı: o oturum için gerçek işletmenin kimliği (birden çok işletmede koltuğu varsa). |
+| `REWLOY_STAFF_PASSWORD` | İsteğe bağlı: o oturumdaki kişinin şifresi. Yalnız `freezeLocation` için (şube dondurma şifre ister); yoksa dondurma testi atlanır. Başka hiçbir yere gönderilmez. |
 
 Güvenlik: önce anahtar **gönderilmeden** `GET /v1/meta` çağrılır; `"environment"`
 `"dev"` değilse (ya da alan yoksa) hiçbir şey çalışmaz, çıkış kodu 2. İlk
 anahtarlı yanıt da `Rewloy-Mode: test` taşımalıdır. Sıfırlama, ekip oturumunun
 test ortamı anahtarın işletmesi değilse yapılmaz.
 
-Kapsam: `getMeta`/işletme/şubeler; programlar (damga ve hediye kartı oluştur,
-listele); kartlar (`issuePass`, `getPass`, `getPassTill`); `recordSale`
-(tekrar, `occurredAt`, bilinmeyen `lines` alanı), `passAction`, `reverseSale`,
-`reverseAction`, `listPassOperations` ve sayfalama; müşteri araması; kodlar
-(`createBatch`, `listBatches`, `listAllBatches`, `sendBatchLink` reddetmeleri,
-`closeBatch`); webhook'lar (oluştur, listele, sırrı yenile, sil, çözümlenmeyen
-adres); `Idempotency-Key`; `RateLimit-*` başlıkları; hata nesneleri (`code`,
-`status`, `requestId`) ve en sonda `resetTestEnvironment`. Oluşturduklarını
-temizler (webhook silinir, kod kapatılır, program arşivlenir). Alan başına
-geçti/kaldı özeti yazar; bir hata varsa çıkış kodu 1. Henüz kapsanmayanlar:
-[test/live/TODO.md](test/live/TODO.md).
+Kapsam: `getMeta` (`environment`)/işletme/şubeler; programlar (damga ve hediye
+kartı oluştur, listele); kartlar (`issuePass`, `getPass`, `getPassTill`);
+`recordSale` (tekrar, `occurredAt`, fiş satırları), `passAction`, `reverseSale`,
+`reverseAction`, `listPassOperations` ve sayfalama; **fiş satırları ve kazanım
+kuralları** (ürün grupları, damga kuralları, `previewEarn`, `previewSale`, `earn`
+açıklaması, satır iadesi, satır hataları, kuralları kapatmak, görülen
+kategoriler); `copyProgram` (sadakat kartı reddi, hediye kartı kopyası),
+`extendProgramCards`, `updateBatch`; **şube QR'ı** (`publicBranch`, QR listesi,
+PNG/SVG ve PDF/SVG sayfa indirmeleri, `holderBranch` reddi) ve **şube dondurma**
+(anahtarın reddi; ekip oturumu ve şifresi verilmişse dondur, `LOCATION_FROZEN` /
+`BUSINESS_FROZEN`, aç); müşteri araması; kodlar (`createBatch`, `listBatches`,
+`listAllBatches`, `sendBatchLink` reddetmeleri, `closeBatch`); webhook'lar
+(oluştur, 1.3.0 olayları, listele, sırrı yenile, sil, çözümlenmeyen adres);
+`Idempotency-Key`; `RateLimit-*` başlıkları; hata nesneleri (`code`, `status`,
+`requestId`) ve en sonda `resetTestEnvironment`. Oluşturduklarını temizler
+(kurallar kapatılır, gruplar silinir, webhook silinir, kod kapatılır, program
+arşivlenir). Alan başına geçti/kaldı özeti yazar; bir hata varsa çıkış kodu 1.
+Henüz kapsanmayanlar: [test/live/TODO.md](test/live/TODO.md).
 
 ## Belgeler
 
@@ -785,6 +888,97 @@ console.log(voided.undone, voided.restored, voided.balance);   // 'spend', 2500,
   args)`) iterates server-sent events (`event`, `data`, `id`). It reconnects
   with `Last-Event-ID` unless `reconnect: false`.
 
+### Receipt lines and earn rules (API 1.3.0, library 0.3.0)
+
+`recordSale` takes the receipt's `lines`; if the programme has **earn rules**,
+stamps, points or cashback are written by line ("one stamp for each prepared
+drink, none for packaged"). A sale without lines works as in 1.2.0, and a
+programme without rules earns as before even when lines arrive. Every sale
+answer for a sale sent with lines carries `earn`: the rules, step by step.
+
+```ts
+// Groups belong to the business, built from the categories the tills send.
+const drinks = await rewloy.createEarnGroup({ body: { name: 'Prepared drinks', members: [{ effect: 'include', match: 'category', value: 'Drinks' }] } });
+const packaged = await rewloy.createEarnGroup({ body: { name: 'Packaged', members: [{ effect: 'include', match: 'category', value: 'Packaged' }] } });
+
+// Rules belong to a programme. Write with the `revision` you read (409 REVISION_CONFLICT if someone saved in between).
+const rules = await rewloy.getEarnRules({ params: { id: programId } });
+await rewloy.putEarnRules({
+  params: { id: programId },
+  body: { revision: rules.revision, rules: [{ kind: 'stamp.perUnit', groupId: drinks.id, stamps: 1, except: [packaged.id] }] },
+});
+
+const lines = [
+  { lineId: '1', name: 'Latte', sku: 'LATTE', category: 'Drinks > Hot', quantity: 2, unitPriceMinor: 9500 },
+  { lineId: '2', name: 'Water', category: 'Packaged', unitPriceMinor: 2000 },
+];
+// Preview first: nothing is written and no Idempotency-Key is needed.
+const preview = await rewloy.previewSale({ params: { serial }, body: { locationId, amountMinor: 21000, lines } });
+console.log(preview.credited, preview.earn?.rules.map((r) => r.text));
+
+const sale = await rewloy.recordSale({ params: { serial }, body: { locationId, amountMinor: 21000, lines }, idempotencyKey: key });
+for (const line of sale.earn?.lines ?? []) console.log(line.lineId, line.status, line.earned);   // earned | no_rule | zero_price | …
+```
+
+- `amountMinor` is what was paid and cannot exceed the lines' total
+  (`422 LINES_TOTAL_MISMATCH`); a line cannot cost more than its list price
+  (`422 LINE_AMOUNT_INVALID`); at most 500 lines (`422 TOO_MANY_LINES`).
+  `receiptDiscountMinor` is a discount on the whole receipt. An unknown field in
+  a line (`qty`) is a `400 VALIDATION`.
+- The lines are part of the request's fingerprint: the same key with the same
+  lines is a replay (`duplicate: true`, the first `earn`); other lines under it
+  are a `422 IDEMPOTENCY_KEY_REUSED`.
+- `previewEarn` tries a programme's rules without a card: pass an unsaved draft
+  as `ruleSet` and the card's state of the day as `context`. `listEarnTemplates`
+  gives ready-made rule sets (coffee shop, bar, bakery, restaurant).
+- Changing rules: `createEarnRule`, `updateEarnRule`, `deleteEarnRule`;
+  `deleteEarnRules` switches them all off; every version stays in
+  `listEarnRuleRevisions`. Groups: `listEarnGroups`, `getEarnGroup`,
+  `updateEarnGroup`, `deleteEarnGroup` (a group a rule uses is
+  `409 GROUP_IN_USE`). The categories the tills send are in `listSeenLines` and
+  `listEarnSources`; `ignoreSeenLine` / `unignoreSeenLine` keep one out of the
+  "in no group" warning.
+- **Refunding lines.** When only some lines of a sale with lines are refunded,
+  give `reverseSale` `lines`. The sale is judged again without them, under the
+  rules of the day it was made, and only the difference is taken back; the
+  answer carries `earn` and `linesLeft`. Pass your own `idempotencyKey` (if you
+  do not, the client makes a UUID and reuses it for the retries of that one call).
+
+```ts
+const refund = await rewloy.reverseSale({
+  params: { serial },
+  body: { saleKey: key, lines: [{ lineId: '1', quantity: 1 }] },   // one of the two lattes
+  idempotencyKey: `refund-${receiptNo}-latte`,
+});
+console.log(refund.reversed, refund.balance, refund.linesLeft);   // 404 LINE_NOT_FOUND, 409 LINE_ALREADY_REFUNDED
+```
+
+### Branch QR, freezing and codes (API 1.3.0)
+
+- **Branch QR.** Every branch (`getLocation`, `listLocations`) carries `qr`
+  (`code`, `url`, `state`) and `frozen`. `publicBranch({ params: { code } })`
+  reads the page the QR opens, with no credential; the printable files come as a
+  `Blob` from `locationQrPng`, `locationQrSvg`, `locationQrSheetPdf` and
+  `locationQrSheetSvg`. The QR's list (`getLocationQrItems`, `putLocationQrItems`,
+  `addQrItems`, `previewLocationQr`) says which cards show, in what order and on
+  which days. `holderBranch` and `joinHolderBranch` need a Rewloy Cüzdan session
+  (`holderSession`).
+- **Freezing a branch.** `freezeLocation` takes a staff session and the person's
+  password (a key gets `403 CREDENTIAL_NOT_ALLOWED`); `updateLocationFreeze`,
+  `cancelLocationFreeze` and `unfreezeLocation` also work with a key;
+  `listLocationFreezes` gives the history and the free days. A till operation at
+  a frozen branch is `409 LOCATION_FROZEN`; while every branch is frozen an
+  operation with no branch is `409 BUSINESS_FROZEN`; reversals keep working.
+- **Codes.** `updateBatch` edits a code after the fact; `copyProgram` copies a
+  gift-card, coupon or discount-card programme (a loyalty card is
+  `422 NOT_AN_INSTRUMENT`); `extendProgramCards` moves the end of open cards forward.
+- **Webhook events.** `pass.extended` (a card's end moved forward: `reason`
+  `merchant` or `branch_frozen`, `from`, `to`), `location.frozen`,
+  `location.unfrozen`, `business.paused` and `business.resumed`; the last four
+  are not card events (`card` and `customer_id` are `null`). A `pass.activity`
+  `adjust` carries `partial: true` when only some lines of a sale were refunded.
+  `WebhookEvent` types them as a discriminated union.
+
 ### Webhooks
 
 Verify the **raw** body (for example `express.raw({ type: 'application/json' })`)
@@ -870,6 +1064,7 @@ REWLOY_BASE_URL=https://your-dev-server REWLOY_API_KEY=rwk_test_… npm run test
 | `REWLOY_API_KEY` | A **test** key, `rwk_test_…`. Any other key is refused. |
 | `REWLOY_STAFF_SESSION` | Optional: a staff session (`rws_…`, from `login`) of the **real** business that owns the test business. Used only for `resetTestEnvironment` at the end; without it the reset area is skipped. |
 | `REWLOY_MERCHANT` | Optional: the real business's id for that session (when the person has seats in several). |
+| `REWLOY_STAFF_PASSWORD` | Optional: the password of the person behind that session. Used only for `freezeLocation` (freezing a branch asks for it); without it the freezing test is skipped. Never sent anywhere else. |
 
 Safety: `GET /v1/meta` is called first, **without** the key; unless
 `"environment"` is `"dev"` (a missing field counts as not dev) nothing runs and
@@ -877,17 +1072,25 @@ the exit code is 2. The first answer to the key must carry `Rewloy-Mode: test`
 too. The reset is refused unless the staff session's test environment is the
 key's business.
 
-Covered: `getMeta`, business and branches; programmes (a stamp and a gift card
-programme, listing); passes (`issuePass`, `getPass`, `getPassTill`);
-`recordSale` (replay, `occurredAt`, an unknown `lines` field), `passAction`,
-`reverseSale`, `reverseAction`, `listPassOperations` and pagination; customer
-search; codes (`createBatch`, `listBatches`, `listAllBatches`, `sendBatchLink`
-refusals, `closeBatch`); webhooks (create, list, rotate the secret, delete, an
-address that does not resolve); `Idempotency-Key`; the `RateLimit-*` headers;
-error objects (`code`, `status`, `requestId`); and `resetTestEnvironment` last.
-It cleans up what it creates (webhooks deleted, codes closed, programmes
-archived), prints passed/failed per area and exits non-zero on any failure.
-Not covered yet: [test/live/TODO.md](test/live/TODO.md).
+Covered: `getMeta` (`environment`), business and branches; programmes (a stamp
+and a gift card programme, listing); passes (`issuePass`, `getPass`,
+`getPassTill`); `recordSale` (replay, `occurredAt`, receipt lines), `passAction`,
+`reverseSale`, `reverseAction`, `listPassOperations` and pagination; **receipt
+lines and earn rules** (product groups, stamp rules, `previewEarn`,
+`previewSale`, the `earn` explanation, line refunds and line errors, switching
+rules off, seen categories); `copyProgram` (the refusal for a loyalty card, a
+gift-card copy), `extendProgramCards`, `updateBatch`; the **branch QR**
+(`publicBranch`, the QR list, the PNG/SVG and PDF/SVG sheet downloads, the
+`holderBranch` refusal) and **branch freezing** (a key's refusal; with a staff
+session and its password: freeze, `LOCATION_FROZEN` / `BUSINESS_FROZEN`,
+reopen); customer search; codes (`createBatch`, `listBatches`, `listAllBatches`,
+`sendBatchLink` refusals, `closeBatch`); webhooks (create, the 1.3.0 events,
+list, rotate the secret, delete, an address that does not resolve);
+`Idempotency-Key`; the `RateLimit-*` headers; error objects (`code`, `status`,
+`requestId`); and `resetTestEnvironment` last. It cleans up what it creates
+(rules switched off, groups deleted, webhooks deleted, codes closed,
+programmes archived), prints passed/failed per area and exits non-zero on any
+failure. Not covered yet: [test/live/TODO.md](test/live/TODO.md).
 
 ### Security and licence
 

@@ -30,6 +30,33 @@ export interface PassEventData {
   reward?: unknown;
   use?: unknown;
   reason?: string;
+  /** 1.3.0: `true` on an `adjust` `pass.activity` when only some lines of a sale were refunded. */
+  partial?: boolean;
+  [key: string]: unknown;
+}
+
+/** 1.3.0: what `pass.extended` holds: a card's last valid day moved forward (never back). */
+export interface PassExtendedData extends PassEventData {
+  /** `merchant`: "extend existing cards" (`extendProgramCards`); `branch_frozen`: the closed days of a frozen branch were added. */
+  reason: 'merchant' | 'branch_frozen';
+  /** The old last valid day. */
+  from: string;
+  /** The new last valid day. */
+  to: string;
+}
+
+/**
+ * 1.3.0: what the branch and business events hold. They are not card events:
+ * `card` and `customer_id` are null and `location_id` is the branch.
+ */
+export interface LocationEventData {
+  card: null;
+  customer_id: null;
+  location_id: string | null;
+  /** `location.unfrozen`: `hand`, `scheduled` or `archived`; `location.frozen`: the freeze's reason. */
+  reason?: string;
+  startsOn?: string;
+  reopensOn?: string | null;
   [key: string]: unknown;
 }
 
@@ -44,6 +71,22 @@ export type WebhookEvent =
     type: 'pass.issued' | 'pass.activity' | 'pass.voided';
     created_at: string;
     data: PassEventData;
+  }
+  | {
+    /** The event's id. */
+    id: string;
+    /** 1.3.0 */
+    type: 'pass.extended';
+    created_at: string;
+    data: PassExtendedData;
+  }
+  | {
+    /** The event's id. */
+    id: string;
+    /** 1.3.0: a branch froze (a planned freeze: when it starts) or reopened; the business paused (every live branch frozen) or resumed. */
+    type: 'location.frozen' | 'location.unfrozen' | 'business.paused' | 'business.resumed';
+    created_at: string;
+    data: LocationEventData;
   }
   | {
     /** The panel's or `testWebhook`'s test delivery: no event behind it. */

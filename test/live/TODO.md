@@ -1,25 +1,25 @@
-# Live tests: what 0.2.4 cannot do yet
+# Live tests: what is not covered yet
 
-For the 0.3.0 regeneration (API 1.3.0). The live suite (`live.test.ts`) covers the
-operations of the 0.2.4 library. Each item below needs an operation, a field or a
-type that 0.2.4 does not have; add a test per item once the library has it, then
-delete the line here.
+The live suite (`live.test.ts`) covers what a test business can do through a test key
+(and, optionally, a staff session): the operations of 0.2.4, and since 0.3.0 receipt lines,
+earn groups and rules, previews, line refunds, `copyProgram`, the branch QR and its
+downloads, and branch freezing. What is left below needs a credential or a clock a test
+key cannot give. Add a test per item when it can be reached, then delete the line here.
 
-- [ ] `getMeta`: type `environment` (`'live' | 'dev'`). The test reads it through a cast today.
-- [ ] `recordSale` with receipt `lines` (1.3.0): typed lines, the earn rules they trigger, and the
-      replay with the same key. Today the test accepts either "the server takes `lines`" or "400 VALIDATION naming
-      `lines`"; when the server takes them, assert the credited amount from the rules.
-- [ ] Earn rules: create, list, update and delete a rule (programme groups and the line-item schema),
-      and a sale that earns by them.
-- [ ] Branch QR: one QR per branch with curated and seasonal programmes, session-reuse multi-join,
-      branch freeze.
+- [ ] Branch QR: seasonal programmes (`startsOn` / `endsOn`, needs a clock or a dated list), the
+      session-reuse multi-join (`joinHolderBranch`, needs a holder session), the QR of a code
+      (`updateBatch` with `channels.branchQr`), `addQrItems` across branches, `cardScope: "branch"`.
+- [ ] Branch freeze beyond one freeze: a planned freeze (`startsOn` in the future), `FREEZE_LIMIT`
+      (4 starts in 12 months), `pass.extended` after reopening (webhook delivery needs a public receiver).
+- [ ] Earn rules beyond stamps: points and cashback rules, `spendShareMaxPct` (`BILL_REQUIRED`,
+      `SPEND_SHARE_EXCEEDED`), daily and monthly caps over several receipts, shop lines (`rewloy` platform).
 - [ ] Code cards single-entry joins (`joinProgram` through a code), and `BATCH_EXPIRED` / `BATCH_FULL`
       refusals of `sendBatchLink` (need a code that has expired or run out; needs a holder session or a clock).
 - [ ] Holder side (`holderLogin`, `holderSession`, Rewloy Cüzdan operations): needs a holder session in the
       environment; not reachable with a test key.
 - [ ] Operations that need a staff session beyond the reset: keys (`createApiKey`, `revokeApiKey`),
       team, locations, segments, campaigns, automations, promotions, exports (the suite uses a staff session
-      only for `resetTestEnvironment`).
+      only for `resetTestEnvironment` and `freezeLocation`).
 - [ ] Shops and checkout codes (`createShop`, `holdCheckoutCode`, `captureCheckoutOrder` ...).
 - [ ] `liveFeed` (SSE) against the server: connect, receive an event after an `issuePass`, close.
 - [ ] Webhook delivery to a reachable receiver: a local listener cannot be reached from a dev server, so

@@ -5,6 +5,125 @@ https://rewloy.com/gelistiriciler/degisiklikler
 
 This library's releases. The API's own changes are listed at the link above.
 
+## 0.3.0 (2026-10-07)
+
+Rewloy API 1.3.0'ı izler (API sürümü, `info.version`): 298 işlem (0.2.4'te 260),
+hiçbiri kaldırılmadı; 38 yeni işlem, 31 yeni hata kodu, yeni alanlar ve
+webhook olayları. Fiş satırları ve kazanım kuralları, ürün grupları, kazanım ve
+satış önizlemesi, satır iadesi, şube QR'ı (herkese açık sayfa, QR ve sayfa
+dosyaları, liste), şube dondurma, kodlar için düzenleme, kopya ve uzatma. Her
+şey eklemedir; kırılan bir şey yok (ayrıntı aşağıda).
+
+Follows Rewloy API 1.3.0 (the product version in `info.version`): 298
+operations (260 in 0.2.4), none removed; 38 new operations, 31 new error codes,
+new fields and webhook events. Additive: nothing in 0.2.4's public API
+changed (see "Compatibility" below).
+
+- **Receipt lines and earn rules.** `recordSale` takes `lines` (typed:
+  `lineId`, `name`, `sku`, `category` as a path string or array, `quantity` as a
+  number or a decimal string, `unit`, `unitPriceMinor`, `discountMinor`,
+  `totalMinor`, `kind`, `tags`) and `receiptDiscountMinor`; its answer carries
+  `earn`, the explanation of what was written (`source` `legacy` or `rules`,
+  the rule revision, each line's `status`, `groups` and `rules`, the rules with
+  their units and a sentence, and the total step by step with every cap that
+  cut it). New refusals: `LINES_TOTAL_MISMATCH`, `LINE_AMOUNT_INVALID`,
+  `TOO_MANY_LINES`; new `reason` values `no_earning_lines`, `no_lines`,
+  `daily_cap_reached`, `monthly_cap_reached`. The lines are part of the
+  request's fingerprint for `Idempotency-Key`.
+- **Earn groups** (`listEarnGroups`, `createEarnGroup`, `getEarnGroup`,
+  `updateEarnGroup`, `deleteEarnGroup`) and the categories the tills send
+  (`listSeenLines`, `listEarnSources`, `ignoreSeenLine`, `unignoreSeenLine`).
+- **Earn rules** of a programme (`getEarnRules`, `putEarnRules` with the
+  `revision` you read, `createEarnRule`, `updateEarnRule`, `deleteEarnRule`,
+  `deleteEarnRules`, `listEarnRuleRevisions`), the ready-made sets
+  (`listEarnTemplates`), and the two dry runs: `previewEarn` (a programme, with an
+  unsaved `ruleSet` and a card `context`) and `previewSale` (a card: the
+  answer `recordSale` would give now, `preview: true`, nothing written, no
+  `Idempotency-Key`). New codes `REVISION_CONFLICT`, `RULE_KIND_NOT_FOR_TYPE`,
+  `EARN_RULES_NOT_FOUND`, `EARN_RULE_NOT_FOUND`.
+- **Line refunds.** `reverseSale` takes `lines: [{ lineId, quantity?,
+  amountMinor? }]`; the sale is judged again without them under the rules of
+  its day and only the difference is taken back. The answer carries `earn` and
+  `linesLeft`; `reversed` can be `0`. New codes `LINE_NOT_FOUND`,
+  `LINE_ALREADY_REFUNDED`. `reverseSale`'s `Idempotency-Key` is now declared
+  (optional in the document, required by the server for a refund of lines): the
+  client makes a UUID when you give none, as for every operation with an
+  optional key; give your own key for a refund of lines so a retry after a crash
+  is safe.
+- **Branch QR.** A branch (`listLocations`, `getLocation`, `createLocation`,
+  `updateLocation`, `archiveLocation`, `restoreLocation`) carries `qr` (`code`,
+  `url`, `state`), `frozen` and `stats.qrCards30`. `publicBranch` (the page the
+  QR opens, no credential), `holderBranch` and `joinHolderBranch` (a Rewloy
+  Cüzdan session), the files `locationQrPng`, `locationQrSvg`,
+  `locationQrSheetPdf`, `locationQrSheetSvg` (a `Blob`), and the QR's list
+  (`getLocationQrItems`, `putLocationQrItems`, `addQrItems`,
+  `previewLocationQr`). `createLocation` takes `qrListFrom` and `programIds`;
+  `joinProgram` takes `locationId`; `claimHolderCode` and `joinHolderProgram`
+  take `branchCode`; `programJoinQr` takes `branchCode` and `format`. New codes
+  `QR_LIST_CHANGED`, `QR_ITEM_INVALID`, `BRANCH_NOT_FOUND`, `BRANCH_GONE`,
+  `NOT_VALID_HERE`, `ITEM_NOT_OFFERED`.
+- **Freezing a branch.** `freezeLocation` (a staff session and the person's
+  password; a key is `403 CREDENTIAL_NOT_ALLOWED`), `updateLocationFreeze`,
+  `cancelLocationFreeze`, `unfreezeLocation`, `listLocationFreezes`. A till
+  operation at a frozen branch is `409 LOCATION_FROZEN`, and while every
+  branch is frozen an operation with no branch (and a campaign, a checkout
+  hold) is `409 BUSINESS_FROZEN`; both are in the `409` of `recordSale`,
+  `passAction`, `issuePass`, `joinProgram`, `claimCode`, `sendCampaign` and the
+  checkout operations. `getPassTill` carries `frozen`; `listNotifications`
+  takes `kind: 'branch'`; `getPlan` has `billing.days`. New codes
+  `ALREADY_FROZEN`, `NOT_FROZEN`, `FREEZE_STARTED`, `FREEZE_LIMIT`,
+  `LOCATION_ARCHIVED`, `LOCATION_FROZEN`, `BUSINESS_FROZEN`.
+- **Cards and codes.** `copyProgram` (a gift-card, coupon or discount-card
+  programme; a loyalty card is `422 NOT_AN_INSTRUMENT`), `extendProgramCards`
+  (`until` or `days`), `updateBatch`. A programme takes `giftValueMinor`,
+  `offerValueMinor`, `usage`, `usageLimit`, `validity`, `joinWindow` and
+  `terms` (`createProgram`, `updateProgram`, `previewProgram`); a code takes
+  `claimFrom`, `claimUntil`, `channels`, `qrLocationIds` and `proofRequired`
+  and `publicCode` answers `branchNames`, `validity`, `claimOpensOn`, `terms`.
+  `listAllBatches` takes `state: 'scheduled'`. New codes `PROOF_REQUIRED`,
+  `BATCH_NOT_OPEN`, `BATCH_CAP_REQUIRED`, `BATCH_PER_PERSON_REQUIRED`,
+  `CAPACITY_BELOW_CLAIMED`, `CLAIM_AFTER_CARD_END`.
+- **Spending a share of the bill.** `passAction` takes `billMinor`; with a cap
+  on the share payable with cashback a spend without it is `422 BILL_REQUIRED`
+  and above the cap `409 SPEND_SHARE_EXCEEDED` (`holdCheckoutCode` the same with
+  `orderTotalMinor`).
+- **Shops.** A shop has `lines` (what its orders sent), orders carry
+  `earnSource`, and `platform` takes `rewloy` (a shop that signs Rewloy's own
+  order body).
+- **Webhook events.** `pass.extended`, `location.frozen`, `location.unfrozen`,
+  `business.paused` and `business.resumed` in `createWebhook`'s `events` and in
+  every webhook object. `WebhookEvent` (the type `verifyWebhook` returns) gains
+  `pass.extended` (`PassExtendedData`: `reason` `merchant` or `branch_frozen`,
+  `from`, `to`) and the four branch and business events (`LocationEventData`: `card`
+  and `customer_id` are `null`, `location_id` is the branch); `PassEventData` gets
+  `partial` (a `pass.activity` `adjust` when only some lines of a sale were
+  refunded).
+- **Small things.** `getMeta` types `environment` (`'live' | 'dev'`);
+  `holderCard` carries `notices` (a frozen branch's strip) and
+  `holderMerchantPrograms` `validAt`; `getPlan` `billing.days`; `createWebhook`
+  takes the new events.
+- **Compatibility.** Every 0.2.4 operation, exported type and method is still
+  there with the same name. The document changed in these places that can touch
+  code which was exhaustive over 0.2.4's types: the `events` of a webhook, the
+  `kind` filter of `listNotifications`, the `state` and `status` of code lists,
+  `recordSale`'s `reason`, a shop's `platform` and `lastDelivery.result` and
+  `WebhookEvent`'s `type` each gained values, so keep a default branch in a
+  `switch` on them (the library has always said new values may appear).
+  `reverseSale`'s answer `reversed` may now be `0` (a line refund); a field of an
+  answer that is always sent (`frozen`, `qr`, `channels`...) is a required field
+  of the new type. No request body gained a required field and nothing was removed.
+  **No breaking change.**
+- Descriptions of the API moved (the document is Turkish and the TSDoc follows
+  it); `openapi/openapi.json` is the 1.3.0 document of the core commit `da0365b`, the same
+  file in all five libraries.
+- Node: `test/v130.test.ts` (offline: the 38 new operations are there, a sale with
+  lines and its `earn`, `previewSale`, a line refund, files as `Blob`, the
+  public branch page, the new error codes and webhook events);
+  `test/live/` now covers receipt lines, groups and rules, the previews, line
+  refunds, `copyProgram`, the branch QR and its downloads and, with a staff
+  session and password (`REWLOY_STAFF_PASSWORD`), freezing a branch: 106 tests
+  against a local Rewloy 1.3.0 server.
+
 ## 0.2.4 (2026-10-06)
 
 Rewloy API 1.2.0'ı izler (API sürümü, `info.version`): 260 işlem (0.2.2'de 256),

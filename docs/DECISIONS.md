@@ -143,3 +143,24 @@ revisited; most are a line to change.
       outcome in the pull request.
     - **On failure:** it fails when the regenerated code fails.
     - **Cache:** none in that write-enabled job.
+
+## 0.3.0 (API 1.3.0)
+
+25. **Webhook events are a union by `type`.** `WebhookEvent` keeps its first
+    member (`pass.issued`, `pass.activity`, `pass.voided`) and gains
+    `pass.extended` (`PassExtendedData`: `reason`, `from`, `to`) and the four
+    branch and business events (`LocationEventData`), each a member of its
+    own so a `switch (event.type)` narrows `data`. The document describes
+    events only in prose, so these shapes are written by hand from the API
+    documentation; `PassEventData` keeps its index signature, so a field the
+    platform adds later still reads.
+26. **`reverseSale` now sends an `Idempotency-Key`.** The document declares
+    the header (optional; the server requires it for a refund of lines), and the
+    client makes a UUID for an optional key, as it does for every operation.
+    A retry of one call is safe; a caller who may repeat the call after a
+    crash gives its own key (the README says so).
+27. **Live suite.** The freezing test needs a staff session and its person's
+    password (`REWLOY_STAFF_PASSWORD`), read from the environment, used only
+    for `freezeLocation` and never printed; without it the test is skipped.
+    A freeze is always lifted again in a `finally`, and the reset removes
+    any left over.

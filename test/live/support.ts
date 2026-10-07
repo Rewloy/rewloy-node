@@ -19,6 +19,8 @@ export interface LiveEnv {
   staffSession: string | undefined;
   /** Optional: the real business's id for that staff session (`Rewloy-Merchant`). */
   merchant: string | undefined;
+  /** Optional: the password of that staff session's person. Needed only to freeze a branch (`freezeLocation` asks for it); never sent anywhere else. */
+  staffPassword?: string | undefined;
 }
 
 /** The environment, or `null` when the live tests are not configured (they then skip). */
@@ -26,7 +28,7 @@ export function liveEnv(env: NodeJS.ProcessEnv = process.env): LiveEnv | null {
   const baseUrl = env.REWLOY_BASE_URL?.trim();
   const apiKey = env.REWLOY_API_KEY?.trim();
   if (!baseUrl || !apiKey) return null;
-  return { baseUrl, apiKey, staffSession: env.REWLOY_STAFF_SESSION?.trim() || undefined, merchant: env.REWLOY_MERCHANT?.trim() || undefined };
+  return { baseUrl, apiKey, staffSession: env.REWLOY_STAFF_SESSION?.trim() || undefined, merchant: env.REWLOY_MERCHANT?.trim() || undefined, staffPassword: env.REWLOY_STAFF_PASSWORD || undefined };
 }
 
 export const SKIP_REASON = 'REWLOY_BASE_URL and REWLOY_API_KEY are not set (see README, "Live tests")';
