@@ -7,14 +7,14 @@ This library's releases. The API's own changes are listed at the link above.
 
 ## 0.3.0 (2026-10-07)
 
-Rewloy API 1.3.0'ı izler (API sürümü, `info.version`): 298 işlem (0.2.4'te 260),
+Rewloy API 1.3.2'yi izler (API sürümü, `info.version`): 298 işlem (0.2.4'te 260),
 hiçbiri kaldırılmadı; 38 yeni işlem, 31 yeni hata kodu, yeni alanlar ve
 webhook olayları. Fiş satırları ve kazanım kuralları, ürün grupları, kazanım ve
 satış önizlemesi, satır iadesi, şube QR'ı (herkese açık sayfa, QR ve sayfa
 dosyaları, liste), şube dondurma, kodlar için düzenleme, kopya ve uzatma. Her
 şey eklemedir; kırılan bir şey yok (ayrıntı aşağıda).
 
-Follows Rewloy API 1.3.0 (the product version in `info.version`): 298
+Follows Rewloy API 1.3.2 (the product version in `info.version`): 298
 operations (260 in 0.2.4), none removed; 38 new operations, 31 new error codes,
 new fields and webhook events. Additive: nothing in 0.2.4's public API
 changed (see "Compatibility" below).
@@ -114,8 +114,11 @@ changed (see "Compatibility" below).
   of the new type. No request body gained a required field and nothing was removed.
   **No breaking change.**
 - Descriptions of the API moved (the document is Turkish and the TSDoc follows
-  it); `openapi/openapi.json` is the 1.3.0 document of the core commit `da0365b`, the same
-  file in all five libraries.
+  it); `openapi/openapi.json` is the 1.3.2 document of core tag `v1.3.2`, the same
+  file in all five libraries. 1.3.2 adds no operation over 1.3.0: the
+  error-code enum gained six console-only values (`DPA_DRAFT`,
+  `SUMMARY_REQUIRED`, `PREVIEW_CHANGED`, `DAY_CHANGED`, `NOTHING_TO_SEND`,
+  `NOTICE_TOO_LATE`; `/v1` never returns them) and one description changed.
 - Node: `test/v130.test.ts` (offline: the 38 new operations are there, a sale with
   lines and its `earn`, `previewSale`, a line refund, files as `Blob`, the
   public branch page, the new error codes and webhook events);
